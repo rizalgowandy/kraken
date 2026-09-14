@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -41,7 +41,7 @@ func newStoreMocks(t *testing.T) (*storeMocks, func()) {
 	ctrl := gomock.NewController(t)
 	cleanup.Add(ctrl.Finish)
 
-	db, c := localdb.Fixture()
+	db, c := localdb.Fixture(t)
 	cleanup.Add(c)
 
 	rv := mocktagreplication.NewMockRemoteValidator(ctrl)
@@ -61,7 +61,9 @@ func checkTask(t *testing.T, expected *Task, result persistedretry.Task) {
 	t.Helper()
 
 	expectedCopy := *expected
-	resultCopy := *(result.(*Task))
+	resultTask, ok := result.(*Task)
+	require.True(t, ok)
+	resultCopy := *resultTask
 
 	require.InDelta(t, expectedCopy.CreatedAt.Unix(), resultCopy.CreatedAt.Unix(), 1)
 	expectedCopy.CreatedAt = time.Time{}
@@ -133,8 +135,8 @@ func TestDeleteInvalidTasks(t *testing.T) {
 	task1 := TaskFixture()
 	task2 := TaskFixture()
 
-	store.AddPending(task1)
-	store.AddFailed(task2)
+	require.NoError(store.AddPending(task1))
+	require.NoError(store.AddFailed(task2))
 
 	mocks.rv.EXPECT().Valid(task1.Tag, task1.Destination).Return(false)
 	mocks.rv.EXPECT().Valid(task2.Tag, task2.Destination).Return(false)

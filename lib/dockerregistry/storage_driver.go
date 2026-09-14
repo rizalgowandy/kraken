@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -20,13 +20,14 @@ import (
 	"io"
 	"os"
 
+	"github.com/uber/kraken/core"
+
 	"github.com/uber/kraken/lib/dockerregistry/transfer"
 	"github.com/uber/kraken/lib/store"
 	"github.com/uber/kraken/utils/log"
 
 	"github.com/docker/distribution/registry/storage/driver"
 	"github.com/docker/distribution/registry/storage/driver/factory"
-	"github.com/uber-go/tally"
 )
 
 // The path layout in the storage backend is roughly as follows:
@@ -54,8 +55,16 @@ import (
 // Name of storage driver.
 const Name = "kraken"
 
-func init() {
-	factory.Register(Name, &krakenStorageDriverFactory{})
+var DefaultVerificationFunc = func(repo string, digest core.Digest, blob store.FileReader) (SignatureVerificationDecision, error) {
+	return DecisionSkip, nil
+}
+
+func RegisterKrakenStorageDriver() {
+	RegisterKrakenStorageDriverWithImageVerification(DefaultVerificationFunc)
+}
+
+func RegisterKrakenStorageDriverWithImageVerification(verification func(repo string, digest core.Digest, blob store.FileReader) (SignatureVerificationDecision, error)) {
+	factory.Register(Name, &krakenStorageDriverFactory{verification})
 }
 
 // InvalidRequestError implements error and contains the path that is not supported
@@ -79,7 +88,9 @@ func toDriverError(err error, path string) error {
 	return err
 }
 
-type krakenStorageDriverFactory struct{}
+type krakenStorageDriverFactory struct {
+	verification func(repo string, digest core.Digest, blob store.FileReader) (SignatureVerificationDecision, error)
+}
 
 func getParam(params map[string]interface{}, name string) interface{} {
 	p, ok := params[name]
@@ -89,22 +100,34 @@ func getParam(params map[string]interface{}, name string) interface{} {
 	return p
 }
 
-func (factory *krakenStorageDriverFactory) Create(
-	params map[string]interface{}) (driver.StorageDriver, error) {
-
+func (factory *krakenStorageDriverFactory) Create(params map[string]interface{}) (driver.StorageDriver, error) {
 	// Common parameters.
-	constructor := getParam(params, "constructor").(string)
-	config := getParam(params, "config").(Config)
-	transferer := getParam(params, "transferer").(transfer.ImageTransferer)
-	metrics := getParam(params, "metrics").(tally.Scope)
+	constructor, ok := getParam(params, "constructor").(string)
+	if !ok {
+		return nil, fmt.Errorf("expected constructor param to be string, got %T", getParam(params, "constructor"))
+	}
+	config, ok := getParam(params, "config").(Config)
+	if !ok {
+		return nil, fmt.Errorf("expected config param to be Config, got %T", getParam(params, "config"))
+	}
+	transferer, ok := getParam(params, "transferer").(transfer.ImageTransferer)
+	if !ok {
+		return nil, fmt.Errorf("expected transferer param to be transfer.ImageTransferer, got %T", getParam(params, "transferer"))
+	}
 
 	switch constructor {
 	case _rw:
-		castore := getParam(params, "castore").(*store.CAStore)
-		return NewReadWriteStorageDriver(config, castore, transferer, metrics), nil
+		castore, ok := getParam(params, "castore").(*store.CAStore)
+		if !ok {
+			return nil, fmt.Errorf("expected castore param to be *store.CAStore, got %T", getParam(params, "castore"))
+		}
+		return NewReadWriteStorageDriver(config, castore, transferer, factory.verification), nil
 	case _ro:
-		blobstore := getParam(params, "blobstore").(BlobStore)
-		return NewReadOnlyStorageDriver(config, blobstore, transferer, metrics), nil
+		blobstore, ok := getParam(params, "blobstore").(BlobStore)
+		if !ok {
+			return nil, fmt.Errorf("expected blobstore param to be BlobStore, got %T", getParam(params, "blobstore"))
+		}
+		return NewReadOnlyStorageDriver(config, blobstore, transferer, factory.verification), nil
 	default:
 		return nil, fmt.Errorf("unknown constructor %s", constructor)
 	}
@@ -117,7 +140,6 @@ type KrakenStorageDriver struct {
 	blobs      *blobs
 	uploads    uploads
 	manifests  *manifests
-	metrics    tally.Scope
 }
 
 // NewReadWriteStorageDriver creates a KrakenStorageDriver which can push / pull blobs.
@@ -125,15 +147,13 @@ func NewReadWriteStorageDriver(
 	config Config,
 	cas *store.CAStore,
 	transferer transfer.ImageTransferer,
-	metrics tally.Scope) *KrakenStorageDriver {
-
+	verification func(repo string, digest core.Digest, blob store.FileReader) (SignatureVerificationDecision, error)) *KrakenStorageDriver {
 	return &KrakenStorageDriver{
 		config:     config,
 		transferer: transferer,
 		blobs:      newBlobs(cas, transferer),
 		uploads:    newCASUploads(cas, transferer),
-		manifests:  newManifests(transferer),
-		metrics:    metrics,
+		manifests:  newManifests(transferer, verification),
 	}
 }
 
@@ -142,15 +162,13 @@ func NewReadOnlyStorageDriver(
 	config Config,
 	bs BlobStore,
 	transferer transfer.ImageTransferer,
-	metrics tally.Scope) *KrakenStorageDriver {
-
+	verification func(repo string, digest core.Digest, blob store.FileReader) (SignatureVerificationDecision, error)) *KrakenStorageDriver {
 	return &KrakenStorageDriver{
 		config:     config,
 		transferer: transferer,
 		blobs:      newBlobs(bs, transferer),
 		uploads:    disabledUploads{},
-		manifests:  newManifests(transferer),
-		metrics:    metrics,
+		manifests:  newManifests(transferer, verification),
 	}
 }
 
@@ -342,7 +360,7 @@ func (d *KrakenStorageDriver) Delete(ctx context.Context, path string) error {
 // URLFor returns url for path
 func (d *KrakenStorageDriver) URLFor(ctx context.Context, path string, options map[string]interface{}) (string, error) {
 	log.Debugf("(*KrakenStorageDriver).URLFor %s", path)
-	return "", fmt.Errorf("Not implemented")
+	return "", fmt.Errorf("not implemented")
 }
 
 // Walk is not implemented.

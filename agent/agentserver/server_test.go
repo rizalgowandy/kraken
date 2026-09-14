@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,8 +19,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,13 +38,30 @@ import (
 	mockcontainerd "github.com/uber/kraken/mocks/lib/containerruntime/containerd"
 	mockdockerdaemon "github.com/uber/kraken/mocks/lib/containerruntime/dockerdaemon"
 	mockscheduler "github.com/uber/kraken/mocks/lib/torrent/scheduler"
+	mockannounceclient "github.com/uber/kraken/mocks/tracker/announceclient"
 	"github.com/uber/kraken/utils/httputil"
+	"github.com/uber/kraken/utils/memsize"
 	"github.com/uber/kraken/utils/testutil"
 
+	"github.com/go-chi/chi"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 	"github.com/uber-go/tally"
 )
+
+// failingResponseWriter always errors on Write, simulating a client that
+// disconnected after the response headers were sent.
+type failingResponseWriter struct{}
+
+func (failingResponseWriter) Header() http.Header { return http.Header{} }
+
+func (failingResponseWriter) Write([]byte) (int, error) {
+	return 0, errors.New("write failed: client disconnected")
+}
+
+func (failingResponseWriter) WriteHeader(int) {}
+
+var _ http.ResponseWriter = failingResponseWriter{}
 
 type serverMocks struct {
 	cads             *store.CADownloadStore
@@ -49,7 +69,9 @@ type serverMocks struct {
 	tags             *mocktagclient.MockClient
 	dockerCli        *mockdockerdaemon.MockDockerClient
 	containerdCli    *mockcontainerd.MockClient
+	ac               *mockannounceclient.MockClient
 	containerRuntime *mockcontainerruntime.MockFactory
+	stats            tally.TestScope
 	cleanup          *testutil.Cleanup
 }
 
@@ -68,17 +90,30 @@ func newServerMocks(t *testing.T) (*serverMocks, func()) {
 
 	dockerCli := mockdockerdaemon.NewMockDockerClient(ctrl)
 	containerdCli := mockcontainerd.NewMockClient(ctrl)
+	ac := mockannounceclient.NewMockClient(ctrl)
 	containerruntime := mockcontainerruntime.NewMockFactory(ctrl)
+	stats := tally.NewTestScope("", nil)
 	return &serverMocks{
-		cads, sched, tags, dockerCli, containerdCli,
-		containerruntime, &cleanup}, cleanup.Run
+		cads, sched, tags, dockerCli, containerdCli, ac,
+		containerruntime, stats, &cleanup,
+	}, cleanup.Run
 }
 
-func (m *serverMocks) startServer() string {
-	s := New(Config{}, tally.NoopScope, m.cads, m.sched, m.tags, m.containerRuntime)
+func (m *serverMocks) startServer(c Config) (*Server, string) {
+	s := New(c, m.stats, m.cads, m.sched, m.tags, m.ac, m.containerRuntime)
 	addr, stop := testutil.StartServer(s.Handler())
 	m.cleanup.Add(stop)
-	return addr
+	return s, addr
+}
+
+// mbServedValue returns the "mb_served" counter value from the scope.
+func mbServedValue(scope tally.TestScope) int64 {
+	for _, c := range scope.Snapshot().Counters() {
+		if c.Name() == "mb_served" {
+			return c.Value()
+		}
+	}
+	return 0
 }
 
 func TestGetTag(t *testing.T) {
@@ -91,8 +126,8 @@ func TestGetTag(t *testing.T) {
 	d := core.DigestFixture()
 
 	mocks.tags.EXPECT().Get(tag).Return(d, nil)
-
-	c := agentclient.New(mocks.startServer())
+	_, addr := mocks.startServer(Config{})
+	c := agentclient.New(addr)
 
 	result, err := c.GetTag(tag)
 	require.NoError(err)
@@ -109,7 +144,8 @@ func TestGetTagNotFound(t *testing.T) {
 
 	mocks.tags.EXPECT().Get(tag).Return(core.Digest{}, tagclient.ErrTagNotFound)
 
-	c := agentclient.New(mocks.startServer())
+	_, addr := mocks.startServer(Config{})
+	c := agentclient.New(addr)
 
 	_, err := c.GetTag(tag)
 	require.Error(err)
@@ -130,14 +166,82 @@ func TestDownload(t *testing.T) {
 			return store.RunDownload(mocks.cads, d, blob.Content)
 		})
 
-	addr := mocks.startServer()
+	_, addr := mocks.startServer(Config{})
 	c := agentclient.New(addr)
 
 	r, err := c.Download(namespace, blob.Digest)
 	require.NoError(err)
-	result, err := ioutil.ReadAll(r)
+	result, err := io.ReadAll(r)
 	require.NoError(err)
 	require.Equal(string(blob.Content), string(result))
+}
+
+func TestDownloadEmitsMBServed(t *testing.T) {
+	for _, tc := range []struct {
+		desc     string
+		blobSize uint64
+		wantMB   int64
+	}{
+		{"large blob (2 MiB)", 2 * memsize.MB, 2},
+		{"exact 1 MiB blob", memsize.MB, 1},
+		{"sub-MiB blob truncates to 0", 256 * memsize.KB, 0},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			require := require.New(t)
+
+			mocks, cleanup := newServerMocks(t)
+			defer cleanup()
+
+			namespace := core.TagFixture()
+			blob := core.SizedBlobFixture(tc.blobSize, 64)
+
+			mocks.sched.EXPECT().Download(namespace, blob.Digest).DoAndReturn(
+				func(namespace string, d core.Digest) error {
+					return store.RunDownload(mocks.cads, d, blob.Content)
+				})
+
+			_, addr := mocks.startServer(Config{})
+			c := agentclient.New(addr)
+
+			r, err := c.Download(namespace, blob.Digest)
+			require.NoError(err)
+			_, err = io.ReadAll(r)
+			require.NoError(err)
+
+			require.Equal(tc.wantMB, mbServedValue(mocks.stats))
+		})
+	}
+}
+
+func TestDownloadEmitsMBServedEvenWhenCopyFails(t *testing.T) {
+	require := require.New(t)
+
+	mocks, cleanup := newServerMocks(t)
+	defer cleanup()
+
+	namespace := core.TagFixture()
+	blob := core.SizedBlobFixture(2*memsize.MB, 64)
+
+	mocks.sched.EXPECT().Download(namespace, blob.Digest).DoAndReturn(
+		func(namespace string, d core.Digest) error {
+			return store.RunDownload(mocks.cads, d, blob.Content)
+		})
+
+	s := New(
+		Config{}, mocks.stats, mocks.cads, mocks.sched, mocks.tags,
+		mocks.ac, mocks.containerRuntime)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("namespace", namespace)
+	rctx.URLParams.Add("digest", blob.Digest.String())
+	req := httptest.NewRequest(http.MethodGet, "/", nil).
+		WithContext(context.WithValue(context.Background(), chi.RouteCtxKey, rctx))
+
+	err := s.downloadBlobHandler(failingResponseWriter{}, req)
+	require.Error(err)
+	require.Contains(err.Error(), "copy file")
+
+	require.Equal(int64(2), mbServedValue(mocks.stats))
 }
 
 func TestDownloadNotFound(t *testing.T) {
@@ -151,7 +255,7 @@ func TestDownloadNotFound(t *testing.T) {
 
 	mocks.sched.EXPECT().Download(namespace, blob.Digest).Return(scheduler.ErrTorrentNotFound)
 
-	addr := mocks.startServer()
+	_, addr := mocks.startServer(Config{})
 	c := agentclient.New(addr)
 
 	_, err := c.Download(namespace, blob.Digest)
@@ -170,7 +274,7 @@ func TestDownloadUnknownError(t *testing.T) {
 
 	mocks.sched.EXPECT().Download(namespace, blob.Digest).Return(fmt.Errorf("test error"))
 
-	addr := mocks.startServer()
+	_, addr := mocks.startServer(Config{})
 	c := agentclient.New(addr)
 
 	_, err := c.Download(namespace, blob.Digest)
@@ -195,7 +299,7 @@ func TestHealthHandler(t *testing.T) {
 
 			mocks.sched.EXPECT().Probe().Return(test.probeErr)
 
-			addr := mocks.startServer()
+			_, addr := mocks.startServer(Config{})
 
 			_, err := httputil.Get(fmt.Sprintf("http://%s/health", addr))
 			if test.probeErr != nil {
@@ -207,13 +311,180 @@ func TestHealthHandler(t *testing.T) {
 	}
 }
 
+func TestReadinessCheckHandler(t *testing.T) {
+	for _, tc := range []struct {
+		desc          string
+		probeErr      error
+		buildIndexErr error
+		trackerErr    error
+		wantErr       string
+	}{
+		{
+			desc:          "success",
+			probeErr:      nil,
+			buildIndexErr: nil,
+			trackerErr:    nil,
+			wantErr:       "",
+		},
+		{
+			desc:          "failure (probe fails)",
+			probeErr:      errors.New("test scheduler error"),
+			buildIndexErr: nil,
+			trackerErr:    nil,
+			wantErr:       "GET http://{address}/readiness 503: agent not ready: test scheduler error",
+		},
+		{
+			desc:          "failure (build index not ready)",
+			probeErr:      nil,
+			buildIndexErr: errors.New("build index not ready"),
+			trackerErr:    nil,
+			wantErr:       "GET http://{address}/readiness 503: agent not ready: build index not ready",
+		},
+		{
+			desc:          "failure (tracker not ready)",
+			probeErr:      nil,
+			buildIndexErr: nil,
+			trackerErr:    errors.New("tracker not ready"),
+			wantErr:       "GET http://{address}/readiness 503: agent not ready: tracker not ready",
+		},
+		{
+			desc:          "failure (all conditions fail)",
+			probeErr:      errors.New("test scheduler error"),
+			buildIndexErr: errors.New("build index not ready"),
+			trackerErr:    errors.New("tracker not ready"),
+			wantErr:       "GET http://{address}/readiness 503: agent not ready: test scheduler error\nbuild index not ready\ntracker not ready",
+		},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			require := require.New(t)
+
+			mocks, cleanup := newServerMocks(t)
+			defer cleanup()
+
+			mocks.sched.EXPECT().Probe().Return(tc.probeErr)
+			mocks.tags.EXPECT().CheckReadiness().Return(tc.buildIndexErr)
+			mocks.ac.EXPECT().CheckReadiness().Return(tc.trackerErr)
+
+			_, addr := mocks.startServer(Config{})
+			_, err := httputil.Get(fmt.Sprintf("http://%s/readiness", addr))
+			if tc.wantErr == "" {
+				require.Nil(err)
+			} else {
+				require.EqualError(err, strings.ReplaceAll(tc.wantErr, "{address}", addr))
+			}
+		})
+	}
+}
+
+func TestReadinessCheckHandlerCache(t *testing.T) {
+	testErr := errors.New("test-err")
+
+	for _, tc := range []struct {
+		desc                  string
+		readinessCacheTTL     time.Duration
+		waitInvalidation      bool
+		wantFirstCallSuccess  bool
+		wantSecondCallSuccess bool
+		setupMocks            func(m *serverMocks)
+	}{
+		{
+			desc:                  "call 1 succeeds, so second call succeeds without checks",
+			readinessCacheTTL:     10 * time.Minute,
+			waitInvalidation:      false,
+			wantFirstCallSuccess:  true,
+			wantSecondCallSuccess: true,
+			setupMocks: func(m *serverMocks) {
+				m.sched.EXPECT().Probe().Return(nil)
+				m.tags.EXPECT().CheckReadiness().Return(nil)
+				m.ac.EXPECT().CheckReadiness().Return(nil)
+			},
+		},
+		{
+			desc:                  "call 1 fails, so second call performs checks",
+			readinessCacheTTL:     10 * time.Minute,
+			waitInvalidation:      false,
+			wantFirstCallSuccess:  false,
+			wantSecondCallSuccess: true,
+			setupMocks: func(m *serverMocks) {
+				m.sched.EXPECT().Probe().Return(testErr)
+				m.tags.EXPECT().CheckReadiness().Return(testErr)
+				m.ac.EXPECT().CheckReadiness().Return(testErr)
+
+				m.sched.EXPECT().Probe().Return(nil)
+				m.tags.EXPECT().CheckReadiness().Return(nil)
+				m.ac.EXPECT().CheckReadiness().Return(nil)
+			},
+		},
+		{
+			desc:                  "call 1 succeeds, but cache becomes invalid, so second call performs checks",
+			readinessCacheTTL:     10 * time.Minute,
+			waitInvalidation:      true,
+			wantFirstCallSuccess:  true,
+			wantSecondCallSuccess: false,
+			setupMocks: func(m *serverMocks) {
+				m.sched.EXPECT().Probe().Return(nil)
+				m.tags.EXPECT().CheckReadiness().Return(nil)
+				m.ac.EXPECT().CheckReadiness().Return(nil)
+
+				m.sched.EXPECT().Probe().Return(testErr)
+				m.tags.EXPECT().CheckReadiness().Return(testErr)
+				m.ac.EXPECT().CheckReadiness().Return(testErr)
+			},
+		},
+		{
+			desc:                  "call 1 succeeds, but caching is disabled, so second call performs checks",
+			readinessCacheTTL:     0,
+			waitInvalidation:      false,
+			wantFirstCallSuccess:  true,
+			wantSecondCallSuccess: false,
+			setupMocks: func(m *serverMocks) {
+				m.sched.EXPECT().Probe().Return(nil)
+				m.tags.EXPECT().CheckReadiness().Return(nil)
+				m.ac.EXPECT().CheckReadiness().Return(nil)
+
+				m.sched.EXPECT().Probe().Return(testErr)
+				m.tags.EXPECT().CheckReadiness().Return(testErr)
+				m.ac.EXPECT().CheckReadiness().Return(testErr)
+			},
+		},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			require := require.New(t)
+			mocks, cleanup := newServerMocks(t)
+			defer cleanup()
+
+			tc.setupMocks(mocks)
+
+			s, addr := mocks.startServer(Config{readinessCacheTTL: tc.readinessCacheTTL})
+			_, err := httputil.Get(fmt.Sprintf("http://%s/readiness", addr))
+			if tc.wantFirstCallSuccess {
+				require.NoError(err)
+			} else {
+				require.Error(err)
+			}
+
+			if tc.waitInvalidation {
+				// To avoid using time.Sleep, we can rollback the server's lastReady variable to simulate cache invalidation.
+				s.lastReady = s.lastReady.Add(-1 * tc.readinessCacheTTL)
+			}
+
+			_, err = httputil.Get(fmt.Sprintf("http://%s/readiness", addr))
+			if tc.wantSecondCallSuccess {
+				require.NoError(err)
+			} else {
+				require.Error(err)
+			}
+		})
+	}
+}
+
 func TestPatchSchedulerConfigHandler(t *testing.T) {
 	require := require.New(t)
 
 	mocks, cleanup := newServerMocks(t)
 	defer cleanup()
 
-	addr := mocks.startServer()
+	_, addr := mocks.startServer(Config{})
 
 	config := scheduler.Config{
 		ConnTTI: time.Minute,
@@ -242,7 +513,7 @@ func TestGetBlacklistHandler(t *testing.T) {
 	}}
 	mocks.sched.EXPECT().BlacklistSnapshot().Return(blacklist, nil)
 
-	addr := mocks.startServer()
+	_, addr := mocks.startServer(Config{})
 
 	resp, err := httputil.Get(fmt.Sprintf("http://%s/x/blacklist", addr))
 	require.NoError(err)
@@ -260,7 +531,7 @@ func TestDeleteBlobHandler(t *testing.T) {
 
 	d := core.DigestFixture()
 
-	addr := mocks.startServer()
+	_, addr := mocks.startServer(Config{})
 
 	mocks.sched.EXPECT().RemoveTorrent(d).Return(nil)
 
@@ -312,7 +583,7 @@ func TestPreloadHandler(t *testing.T) {
 			defer cleanup()
 
 			tt.setup(mocks)
-			addr := mocks.startServer()
+			_, addr := mocks.startServer(Config{})
 
 			_, err := httputil.Get(fmt.Sprintf("http://%s%s", addr, tt.url))
 			if tt.expectedError != "" {

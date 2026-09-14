@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,18 +18,17 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/golang/mock/gomock"
+	"github.com/stretchr/testify/require"
+	"github.com/uber-go/tally"
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/lib/backend"
 	"github.com/uber/kraken/lib/backend/backenderrors"
 	"github.com/uber/kraken/lib/store"
 	"github.com/uber/kraken/lib/store/metadata"
-	"github.com/uber/kraken/mocks/lib/backend"
+	mockbackend "github.com/uber/kraken/mocks/lib/backend"
 	"github.com/uber/kraken/utils/mockutil"
 	"github.com/uber/kraken/utils/testutil"
-
-	"github.com/golang/mock/gomock"
-	"github.com/stretchr/testify/require"
-	"github.com/uber-go/tally"
 )
 
 type executorMocks struct {
@@ -61,7 +60,7 @@ func (m *executorMocks) new() *Executor {
 
 func (m *executorMocks) client(namespace string) *mockbackend.MockClient {
 	client := mockbackend.NewMockClient(m.ctrl)
-	if err := m.backends.Register(namespace, client); err != nil {
+	if err := m.backends.Register(namespace, client, false); err != nil {
 		panic(err)
 	}
 	return client

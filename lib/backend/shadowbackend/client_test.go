@@ -23,6 +23,7 @@ import (
 
 	"github.com/uber-go/tally"
 	mockbackend "github.com/uber/kraken/mocks/lib/backend"
+	"github.com/uber/kraken/utils/closers"
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
@@ -34,6 +35,7 @@ import (
 	"github.com/uber/kraken/lib/backend/s3backend"
 	"github.com/uber/kraken/lib/backend/sqlbackend"
 	"github.com/uber/kraken/lib/backend/testfs"
+	"go.uber.org/zap"
 )
 
 type clientMocks struct {
@@ -63,6 +65,12 @@ func newClient(mocks *clientMocks) *Client {
 		panic("oh noes")
 	}
 	return &Client{active: ab, shadow: sb}
+}
+
+// setupCloseExpectations sets up Close() expectations for both mock clients
+func setupCloseExpectations(mocks *clientMocks) {
+	mocks.mockActive.EXPECT().Close().Return(nil)
+	mocks.mockShadow.EXPECT().Close().Return(nil)
 }
 
 func TestClientFactory(t *testing.T) {
@@ -135,7 +143,7 @@ func TestClientFactory(t *testing.T) {
 		},
 	} {
 		f := factory{}
-		c, err := f.Create(tc.config, tc.masterAuthConfig, tally.NoopScope)
+		c, err := f.Create(tc.config, tc.masterAuthConfig, tally.NoopScope, zap.NewNop().Sugar())
 		if tc.wantErrMsg == "" {
 			require.NoError(t, err)
 			require.NotNil(t, c)
@@ -317,7 +325,10 @@ func TestStat(t *testing.T) {
 					Return(&core.BlobInfo{}, nil)
 			}
 
+			setupCloseExpectations(mocks)
+
 			client := newClient(mocks)
+			defer closers.Close(client)
 
 			res, err := client.Stat("", "a:1")
 
@@ -348,7 +359,10 @@ func TestDownloadActiveSuccess(t *testing.T) {
 			return nil
 		})
 
+	setupCloseExpectations(mocks)
+
 	client := newClient(mocks)
+	defer closers.Close(client)
 
 	err := client.Download("", "a:1", w)
 	assert.NoError(t, err)
@@ -363,7 +377,10 @@ func TestDownloadActiveNotFound(t *testing.T) {
 		Download("", "a:1", gomock.Any()).
 		Return(backenderrors.ErrBlobNotFound)
 
+	setupCloseExpectations(mocks)
+
 	client := newClient(mocks)
+	defer closers.Close(client)
 
 	err := client.Download("", "a:1", new(bytes.Buffer))
 	assert.EqualError(t, err, backenderrors.ErrBlobNotFound.Error())
@@ -382,7 +399,10 @@ func TestUploadSuccess(t *testing.T) {
 		Upload("", newRepoTag, gomock.Any()).
 		Return(nil)
 
+	setupCloseExpectations(mocks)
+
 	client := newClient(mocks)
+	defer closers.Close(client)
 
 	err := client.Upload("", newRepoTag, strings.NewReader(imageID))
 	assert.NoError(t, err)
@@ -399,7 +419,10 @@ func TestUploadActiveFailure(t *testing.T) {
 		Upload("", newRepoTag, gomock.Any()).
 		Return(expectedErr)
 
+	setupCloseExpectations(mocks)
+
 	client := newClient(mocks)
+	defer closers.Close(client)
 
 	err := client.Upload("", newRepoTag, strings.NewReader(imageID))
 	assert.EqualError(t, err, expectedErr.Error())
@@ -419,7 +442,10 @@ func TestUploadShadowFailure(t *testing.T) {
 		Upload("", newRepoTag, gomock.Any()).
 		Return(expectedErr)
 
+	setupCloseExpectations(mocks)
+
 	client := newClient(mocks)
+	defer closers.Close(client)
 
 	err := client.Upload("", newRepoTag, strings.NewReader(imageID))
 	assert.EqualError(t, err, expectedErr.Error())
@@ -442,7 +468,10 @@ func TestListActiveSuccess(t *testing.T) {
 		List("prefix", gomock.Any()).
 		Return(&results, nil)
 
+	setupCloseExpectations(mocks)
+
 	client := newClient(mocks)
+	defer closers.Close(client)
 
 	res, err := client.List("prefix")
 	require.NoError(t, err)
@@ -457,7 +486,10 @@ func TestListActiveFailure(t *testing.T) {
 		List("prefix", gomock.Any()).
 		Return(nil, errors.New("expected error"))
 
+	setupCloseExpectations(mocks)
+
 	client := newClient(mocks)
+	defer closers.Close(client)
 
 	res, err := client.List("prefix")
 	assert.EqualError(t, err, "expected error")

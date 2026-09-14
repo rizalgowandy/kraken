@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -28,7 +28,7 @@ import (
 
 // Torrent errors.
 var (
-	ErrReadOnly = errors.New("Read-only torrent is being written to")
+	ErrReadOnly = errors.New("read-only torrent is being written to")
 )
 
 // Torrent is a read-only storage.Torrent. It allows concurrent reads on all

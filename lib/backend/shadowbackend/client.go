@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -27,17 +27,24 @@ import (
 	"github.com/uber/kraken/lib/backend/sqlbackend"
 	"github.com/uber/kraken/lib/backend/testfs"
 	"github.com/uber/kraken/utils/log"
+	"go.uber.org/zap"
 	"gopkg.in/yaml.v2"
 )
+
+const _shadow = "shadow"
+
+func init() {
+	backend.Register(_shadow, &factory{})
+}
 
 type factory struct{}
 
 func (f *factory) Name() string {
-	return "shadow"
+	return _shadow
 }
 
 func (f *factory) Create(
-	confRaw interface{}, masterAuthConfig backend.AuthConfig, stats tally.Scope) (backend.Client, error) {
+	confRaw interface{}, masterAuthConfig backend.AuthConfig, stats tally.Scope, _ *zap.SugaredLogger) (backend.Client, error) {
 
 	confBytes, err := yaml.Marshal(confRaw)
 	if err != nil {
@@ -137,6 +144,9 @@ func getBackendClient(backendConfig map[string]interface{}, authConfRaw interfac
 				return nil, fmt.Errorf("unmarshal sql config: %s", err)
 			}
 			authConfBytes, err := yaml.Marshal(authConfRaw)
+			if err != nil {
+				return nil, fmt.Errorf("marshal sql auth config: %s", err)
+			}
 			var userAuth sqlbackend.UserAuthConfig
 			if err := yaml.Unmarshal(authConfBytes, &userAuth); err != nil {
 				return nil, fmt.Errorf("unmarshal sql auth config: %s", err)
@@ -165,6 +175,9 @@ func getBackendClient(backendConfig map[string]interface{}, authConfRaw interfac
 				return nil, fmt.Errorf("unmarshal s3 config: %s", err)
 			}
 			authConfBytes, err := yaml.Marshal(authConfRaw)
+			if err != nil {
+				return nil, fmt.Errorf("marshal s3 auth config: %s", err)
+			}
 			var userAuth s3backend.UserAuthConfig
 			if err := yaml.Unmarshal(authConfBytes, &userAuth); err != nil {
 				return nil, fmt.Errorf("unmarshal s3 auth config: %s", err)
@@ -261,4 +274,20 @@ func (c *Client) List(prefix string, opts ...backend.ListOption) (*backend.ListR
 		return nil, err
 	}
 	return res, nil
+}
+
+// Close closes the client and releases any held resources.
+func (c *Client) Close() error {
+	allErrors := make([]error, 0)
+	if err := c.active.Close(); err != nil {
+		allErrors = append(allErrors, err)
+	}
+	if err := c.shadow.Close(); err != nil {
+		allErrors = append(allErrors, err)
+	}
+
+	if len(allErrors) > 0 {
+		return errors.Join(allErrors...)
+	}
+	return nil
 }

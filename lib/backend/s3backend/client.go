@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -33,6 +33,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	"go.uber.org/zap"
 	"gopkg.in/yaml.v2"
 )
 
@@ -45,7 +46,7 @@ func init() {
 type factory struct{}
 
 func (f *factory) Create(
-	confRaw interface{}, masterAuthConfig backend.AuthConfig, stats tally.Scope) (backend.Client, error) {
+	confRaw interface{}, masterAuthConfig backend.AuthConfig, stats tally.Scope, _ *zap.SugaredLogger) (backend.Client, error) {
 
 	confBytes, err := yaml.Marshal(confRaw)
 	if err != nil {
@@ -128,7 +129,11 @@ func NewClient(
 		awsConfig = awsConfig.WithS3ForcePathStyle(config.S3ForcePathStyle)
 	}
 
-	api := s3.New(session.New(), awsConfig)
+	sess, err := session.NewSession(awsConfig)
+	if err != nil {
+		return nil, fmt.Errorf("create AWS session: %s", err)
+	}
+	api := s3.New(sess)
 
 	downloader := s3manager.NewDownloaderWithClient(api, func(d *s3manager.Downloader) {
 		d.PartSize = config.DownloadPartSize
@@ -295,4 +300,10 @@ func (c *Client) List(prefix string, opts ...backend.ListOption) (*backend.ListR
 		Names:             names,
 		ContinuationToken: nextContinuationToken,
 	}, nil
+}
+
+// Close closes the client and releases any held resources.
+func (c *Client) Close() error {
+	// No resources to close for S3 client
+	return nil
 }

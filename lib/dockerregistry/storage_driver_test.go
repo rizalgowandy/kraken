@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,7 +16,7 @@ package dockerregistry
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"math/rand"
 	"testing"
@@ -98,7 +98,7 @@ func TestStorageDriverReader(t *testing.T) {
 				require.Equal(tc.err, err)
 				return
 			}
-			data, err := ioutil.ReadAll(reader)
+			data, err := io.ReadAll(reader)
 			require.Equal(tc.data, data)
 			require.Equal(tc.err, err)
 		})
@@ -160,20 +160,20 @@ func TestStorageDriverWriter(t *testing.T) {
 	content := []byte("this is a test for upload writer")
 	for _, tc := range testCases {
 		t.Run(fmt.Sprintf("GetWriter %s", tc.input), func(t *testing.T) {
-			require := require.New(t)
 			w, err := sd.Writer(contextFixture(), tc.input, false)
-			require.Equal(tc.err, err)
+			require.Equal(t, tc.err, err)
 			if err != nil {
 				return
 			}
-			w.Write(content)
-			w.Close()
+			_, err = w.Write(content)
+			require.NoError(t, err)
+			require.NoError(t, w.Close())
 			r, err := sd.Reader(contextFixture(), tc.input, 0)
-			require.NoError(err)
-			defer r.Close()
-			data, err := ioutil.ReadAll(r)
-			require.NoError(err)
-			require.Equal(content, data)
+			require.NoError(t, err)
+			data, err := io.ReadAll(r)
+			require.NoError(t, err)
+			require.Equal(t, content, data)
+			require.NoError(t, r.Close())
 		})
 	}
 }
@@ -250,7 +250,7 @@ func TestStorageDriverMove(t *testing.T) {
 
 	reader, err := td.cas.GetCacheFileReader(d.Hex())
 	require.NoError(err)
-	data, err := ioutil.ReadAll(reader)
+	data, err := io.ReadAll(reader)
 	require.NoError(err)
 	require.Equal(uploadContent, string(data))
 }

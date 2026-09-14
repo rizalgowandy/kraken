@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -31,7 +31,11 @@ func MatchTask(task *Task) *TaskMatcher {
 // Matches compares two tasks. It ignores checking for time.
 func (m *TaskMatcher) Matches(x interface{}) bool {
 	expected := m.task
-	result := *(x.(*Task))
+	taskPtr, ok := x.(*Task)
+	if !ok {
+		return false
+	}
+	result := *taskPtr
 
 	expected.CreatedAt = time.Time{}
 	result.CreatedAt = time.Time{}

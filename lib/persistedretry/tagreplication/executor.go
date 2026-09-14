@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -52,7 +52,10 @@ func (e *Executor) Name() string {
 // Exec replicates a tag's blob dependencies to the task's remote origin
 // cluster, then replicates the tag to the remote build-index.
 func (e *Executor) Exec(r persistedretry.Task) error {
-	t := r.(*Task)
+	t, ok := r.(*Task)
+	if !ok {
+		return fmt.Errorf("expected *Task, got %T", r)
+	}
 	start := time.Now()
 	remoteTagClient := e.tagClientProvider.Provide(t.Destination)
 

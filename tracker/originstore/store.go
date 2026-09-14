@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -61,7 +61,11 @@ func New(config Config, clk clock.Clock, origins hostlist.List, provider blobcli
 }
 
 func (s *store) GetOrigins(d core.Digest) ([]*core.PeerInfo, error) {
-	lr := s.locations.Run(d).(*locationsResult)
+	result := s.locations.Run(d)
+	lr, ok := result.(*locationsResult)
+	if !ok {
+		return nil, fmt.Errorf("unexpected result type from locations.Run: %T", result)
+	}
 	if lr.err != nil {
 		return nil, lr.err
 	}
@@ -69,7 +73,11 @@ func (s *store) GetOrigins(d core.Digest) ([]*core.PeerInfo, error) {
 	var errs []error
 	var origins []*core.PeerInfo
 	for _, addr := range lr.addrs {
-		pcr := s.peerContexts.Run(addr).(*peerContextResult)
+		result := s.peerContexts.Run(addr)
+		pcr, ok := result.(*peerContextResult)
+		if !ok {
+			return nil, fmt.Errorf("unexpected result type from peerContexts.Run: %T", result)
+		}
 		if pcr.err != nil {
 			errs = append(errs, pcr.err)
 		} else {
@@ -92,7 +100,10 @@ type locationsResult struct {
 }
 
 func (l *locations) Run(input interface{}) (interface{}, time.Duration) {
-	d := input.(core.Digest)
+	d, ok := input.(core.Digest)
+	if !ok {
+		panic(fmt.Sprintf("locations.Run: expected core.Digest, got %T", input))
+	}
 	addrs, err := blobclient.Locations(l.store.provider, l.store.origins, d)
 	ttl := l.store.config.LocationsTTL
 	if err != nil {
@@ -111,7 +122,10 @@ type peerContextResult struct {
 }
 
 func (p *peerContexts) Run(input interface{}) (interface{}, time.Duration) {
-	addr := input.(string)
+	addr, ok := input.(string)
+	if !ok {
+		panic(fmt.Sprintf("peerContexts.Run: expected string, got %T", input))
+	}
 	pctx, err := p.store.provider.Provide(addr).GetPeerContext()
 	ttl := p.store.config.OriginContextTTL
 	if err != nil {

@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//	   http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -20,6 +20,8 @@ import (
 	"io"
 	"path"
 
+	"github.com/uber/kraken/utils/closers"
+
 	"github.com/uber-go/tally"
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/lib/backend"
@@ -28,6 +30,7 @@ import (
 	"github.com/uber/kraken/utils/log"
 
 	"cloud.google.com/go/storage"
+	"go.uber.org/zap"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 	"gopkg.in/yaml.v2"
@@ -42,7 +45,7 @@ func init() {
 type factory struct{}
 
 func (f *factory) Create(
-	confRaw interface{}, masterAuthConfig backend.AuthConfig, stats tally.Scope) (backend.Client, error) {
+	confRaw interface{}, masterAuthConfig backend.AuthConfig, stats tally.Scope, _ *zap.SugaredLogger) (backend.Client, error) {
 
 	confBytes, err := yaml.Marshal(confRaw)
 	if err != nil {
@@ -67,10 +70,11 @@ func (f *factory) Create(
 
 // Client implements a backend.Client for GCS.
 type Client struct {
-	config Config
-	pather namepath.Pather
-	stats  tally.Scope
-	gcs    GCS
+	config  Config
+	pather  namepath.Pather
+	stats   tally.Scope
+	gcs     GCS
+	sClient *storage.Client
 }
 
 // Option allows setting optional Client parameters.
@@ -108,7 +112,13 @@ func NewClient(
 
 	if len(opts) > 0 {
 		// For mock.
-		client := &Client{config, pather, stats, nil}
+		client := &Client{
+			config:  config,
+			pather:  pather,
+			stats:   stats,
+			gcs:     nil,
+			sClient: nil,
+		}
 		for _, opt := range opts {
 			opt(client)
 		}
@@ -122,8 +132,13 @@ func NewClient(
 		return nil, fmt.Errorf("invalid gcs credentials: %s", err)
 	}
 
-	client := &Client{config, pather, stats,
-		NewGCS(ctx, sClient.Bucket(config.Bucket), &config)}
+	client := &Client{
+		config:  config,
+		pather:  pather,
+		stats:   stats,
+		gcs:     NewGCS(ctx, sClient.Bucket(config.Bucket), &config),
+		sClient: sClient,
+	}
 
 	log.Infof("Initalized GCS backend with config: %s", config)
 	return client, nil
@@ -213,6 +228,14 @@ func (c *Client) List(prefix string, opts ...backend.ListOption) (*backend.ListR
 	return result, nil
 }
 
+// Close closes the storage client
+func (c *Client) Close() error {
+	if c.sClient == nil {
+		return nil
+	}
+	return c.sClient.Close()
+}
+
 // isObjectNotFound is helper function for identify non-existing object error.
 func isObjectNotFound(err error) bool {
 	return err == storage.ErrObjectNotExist || err == storage.ErrBucketNotExist
@@ -244,7 +267,7 @@ func (g *GCSImpl) Download(objectName string, w io.Writer) (int64, error) {
 		}
 		return 0, err
 	}
-	defer rc.Close()
+	defer closers.Close(rc)
 
 	r, err := io.CopyN(w, rc, int64(g.config.BufferGuard))
 	if err != nil && err != io.EOF {

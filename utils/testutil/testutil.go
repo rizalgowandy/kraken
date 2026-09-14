@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,7 +15,6 @@ package testutil
 
 import (
 	"fmt"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"os"
@@ -85,8 +84,12 @@ func StartServer(h http.Handler) (addr string, stop func()) {
 		panic(err)
 	}
 	s := &http.Server{Handler: h}
-	go s.Serve(l)
-	return l.Addr().String(), func() { s.Close() }
+	go s.Serve(l) //nolint:errcheck
+	return l.Addr().String(), func() {
+		if err := s.Close(); err != nil {
+			panic(err)
+		}
+	}
 }
 
 // TempFile creates a temporary file. Returns its name and cleanup function.
@@ -94,12 +97,20 @@ func TempFile(data []byte) (string, func()) {
 	var cleanup Cleanup
 	defer cleanup.Recover()
 
-	f, err := ioutil.TempFile(".", "")
+	f, err := os.CreateTemp(".", "")
 	if err != nil {
 		panic(err)
 	}
-	cleanup.Add(func() { os.Remove(f.Name()) })
-	defer f.Close()
+	cleanup.Add(func() {
+		if err := os.Remove(f.Name()); err != nil {
+			panic(err)
+		}
+	})
+	defer func() {
+		if err := f.Close(); err != nil {
+			panic(err)
+		}
+	}()
 	if _, err := f.Write(data); err != nil {
 		panic(err)
 	}

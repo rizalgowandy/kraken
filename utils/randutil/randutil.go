@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,14 +16,9 @@ package randutil
 import (
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math/rand"
 	"time"
 )
-
-func init() {
-	rand.Seed(time.Now().UnixNano())
-}
 
 func choose(n uint64, choices string) []byte {
 	b := make([]byte, n)
@@ -46,7 +41,12 @@ func Blob(n uint64) []byte {
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	lr := io.LimitReader(r, int64(n))
-	b, _ := ioutil.ReadAll(lr)
+	b, err := io.ReadAll(lr)
+	if err != nil {
+		// This should never happen with a rand.Rand source, but handle it
+		// gracefully by returning an empty slice.
+		return make([]byte, 0)
+	}
 
 	return b
 }

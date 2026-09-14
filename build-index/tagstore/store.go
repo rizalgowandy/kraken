@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,6 +15,7 @@ package tagstore
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -28,8 +29,8 @@ import (
 	"github.com/uber/kraken/lib/persistedretry/writeback"
 	"github.com/uber/kraken/lib/store"
 	"github.com/uber/kraken/lib/store/metadata"
-
-	"github.com/uber-go/tally"
+	"github.com/uber/kraken/utils/closers"
+	"github.com/uber/kraken/utils/log"
 )
 
 // Store errors.
@@ -46,7 +47,7 @@ type FileStore interface {
 
 // Store defines tag storage operations.
 type Store interface {
-	Put(tag string, d core.Digest, writeBackDelay time.Duration) error
+	Put(ctx context.Context, tag string, d core.Digest, writeBackDelay time.Duration) error
 	Get(tag string) (core.Digest, error)
 }
 
@@ -58,47 +59,51 @@ type tagStore struct {
 	fs               FileStore
 	backends         *backend.Manager
 	writeBackManager persistedretry.Manager
+
+	// writeBackStrategy determines how tags are written to backend storage.
+	// Set at initialization based on WriteThrough config.
+	writeBackStrategy func(task persistedretry.Task) error
 }
 
 // New creates a new Store.
 func New(
 	config Config,
-	stats tally.Scope,
 	fs FileStore,
 	backends *backend.Manager,
-	writeBackManager persistedretry.Manager) Store {
-
-	stats = stats.Tagged(map[string]string{
-		"module": "tagstore",
-	})
-
-	return &tagStore{
+	writeBackManager persistedretry.Manager,
+) Store {
+	s := &tagStore{
 		config:           config,
 		fs:               fs,
 		backends:         backends,
 		writeBackManager: writeBackManager,
 	}
+
+	// Set write-back strategy based on configuration
+	if config.WriteThrough {
+		s.writeBackStrategy = s.writeThroughStrategy
+	} else {
+		s.writeBackStrategy = s.asyncWriteBackStrategy
+	}
+
+	return s
 }
 
-func (s *tagStore) Put(tag string, d core.Digest, writeBackDelay time.Duration) error {
+func (s *tagStore) Put(ctx context.Context, tag string, d core.Digest, writeBackDelay time.Duration) error {
+	log.WithTraceContext(ctx).With("tag", tag, "digest", d.Hex(), "delay", writeBackDelay).Debug("Starting tag put operation")
+
 	if err := s.writeTagToDisk(tag, d); err != nil {
+		log.WithTraceContext(ctx).With("tag", tag, "error", err).Error("Failed to write tag to disk")
 		return fmt.Errorf("write tag to disk: %s", err)
 	}
 	if _, err := s.fs.SetCacheFileMetadata(tag, metadata.NewPersist(true)); err != nil {
+		log.WithTraceContext(ctx).With("tag", tag, "error", err).Error("Failed to set persist metadata")
 		return fmt.Errorf("set persist metadata: %s", err)
 	}
+	task := writeback.NewTaskWithContext(ctx, tag, tag, writeBackDelay)
+	log.WithTraceContext(ctx).With("tag", tag, "has_trace", task.HasTraceContext()).Debug("Created writeback task with trace context")
 
-	task := writeback.NewTask(tag, tag, writeBackDelay)
-	if s.config.WriteThrough {
-		if err := s.writeBackManager.SyncExec(task); err != nil {
-			return fmt.Errorf("sync exec write-back task: %s", err)
-		}
-	} else {
-		if err := s.writeBackManager.Add(task); err != nil {
-			return fmt.Errorf("add write-back task: %s", err)
-		}
-	}
-	return nil
+	return s.writeBackStrategy(task)
 }
 
 func (s *tagStore) Get(tag string) (d core.Digest, err error) {
@@ -115,6 +120,22 @@ func (s *tagStore) Get(tag string) (d core.Digest, err error) {
 	return d, err
 }
 
+// writeThroughStrategy writes tags synchronously to backend storage.
+func (s *tagStore) writeThroughStrategy(task persistedretry.Task) error {
+	if err := s.writeBackManager.SyncExec(task); err != nil {
+		return fmt.Errorf("sync exec write-back task: %s", err)
+	}
+	return nil
+}
+
+// asyncWriteBackStrategy queues tags for asynchronous write-back to backend storage.
+func (s *tagStore) asyncWriteBackStrategy(task persistedretry.Task) error {
+	if err := s.writeBackManager.Add(task); err != nil {
+		return fmt.Errorf("add write-back task: %s", err)
+	}
+	return nil
+}
+
 func (s *tagStore) writeTagToDisk(tag string, d core.Digest) error {
 	buf := bytes.NewBufferString(d.String())
 	if err := s.fs.CreateCacheFile(tag, buf); err != nil && !os.IsExist(err) {
@@ -124,40 +145,61 @@ func (s *tagStore) writeTagToDisk(tag string, d core.Digest) error {
 }
 
 func (s *tagStore) resolveFromDisk(tag string) (core.Digest, error) {
+	log.With("tag", tag).Debug("Attempting to resolve tag from disk cache")
+
 	f, err := s.fs.GetCacheFileReader(tag)
 	if err != nil {
 		if os.IsNotExist(err) {
+			log.With("tag", tag).Debug("Tag not found in disk cache")
 			return core.Digest{}, ErrTagNotFound
 		}
+		log.With("tag", tag).Errorf("Failed to read tag from disk cache: %s", err)
 		return core.Digest{}, fmt.Errorf("fs: %s", err)
 	}
-	defer f.Close()
+	defer closers.Close(f)
 	var b bytes.Buffer
 	if _, err := io.Copy(&b, f); err != nil {
+		log.With("tag", tag).Errorf("Failed to copy tag data from disk: %s", err)
 		return core.Digest{}, fmt.Errorf("copy from fs: %s", err)
 	}
 	d, err := core.ParseSHA256Digest(b.String())
 	if err != nil {
+		log.With("tag", tag).Errorf("Failed to parse digest from disk cache: %s", err)
 		return core.Digest{}, fmt.Errorf("parse fs digest: %s", err)
 	}
+
+	log.With("tag", tag, "digest", d.String()).Debug("Successfully resolved tag from disk cache")
 	return d, nil
 }
 
 func (s *tagStore) resolveFromBackend(tag string) (core.Digest, error) {
+	log.With("tag", tag).Debug("Attempting to resolve tag from backend")
+
 	backendClient, err := s.backends.GetClient(tag)
 	if err != nil {
+		log.With("tag", tag).Errorf("Failed to get backend client: %s", err)
 		return core.Digest{}, fmt.Errorf("backend manager: %s", err)
 	}
 	var b bytes.Buffer
 	if err := backendClient.Download(tag, tag, &b); err != nil {
-		if err == backenderrors.ErrBlobNotFound {
-			return core.Digest{}, ErrTagNotFound
+		if errors.Is(err, backenderrors.ErrBlobNotFound) {
+			log.With("tag", tag).Debug("Tag not found in backend")
+		} else {
+			// Kraken is expected to accept image pushes even when remote storage is
+			// down by storing the blob on disk and flushing it to the remote storage
+			// once it becomes available again. When we experience a backend error,
+			// we return 404, instead of 500, as the latter would abort Docker pushes
+			// that HEAD before PUT (e.g. containerd snapshotter).
+			log.With("tag", tag, "error", err).Error("Failed to download tag from backend")
 		}
-		return core.Digest{}, fmt.Errorf("backend client: %s", err)
+		return core.Digest{}, ErrTagNotFound
 	}
 	d, err := core.ParseSHA256Digest(b.String())
 	if err != nil {
+		log.With("tag", tag).Errorf("Failed to parse digest from backend: %s", err)
 		return core.Digest{}, fmt.Errorf("parse backend digest: %s", err)
 	}
+
+	log.With("tag", tag, "digest", d.String()).Info("Successfully resolved tag from backend")
 	return d, nil
 }

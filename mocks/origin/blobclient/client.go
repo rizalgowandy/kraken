@@ -5,37 +5,39 @@
 package mockblobclient
 
 import (
-	gomock "github.com/golang/mock/gomock"
-	core "github.com/uber/kraken/core"
+	context "context"
 	io "io"
 	reflect "reflect"
 	time "time"
+
+	gomock "github.com/golang/mock/gomock"
+	core "github.com/uber/kraken/core"
 )
 
-// MockClient is a mock of Client interface
+// MockClient is a mock of Client interface.
 type MockClient struct {
 	ctrl     *gomock.Controller
 	recorder *MockClientMockRecorder
 }
 
-// MockClientMockRecorder is the mock recorder for MockClient
+// MockClientMockRecorder is the mock recorder for MockClient.
 type MockClientMockRecorder struct {
 	mock *MockClient
 }
 
-// NewMockClient creates a new mock instance
+// NewMockClient creates a new mock instance.
 func NewMockClient(ctrl *gomock.Controller) *MockClient {
 	mock := &MockClient{ctrl: ctrl}
 	mock.recorder = &MockClientMockRecorder{mock}
 	return mock
 }
 
-// EXPECT returns an object that allows the caller to indicate expected use
+// EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockClient) EXPECT() *MockClientMockRecorder {
 	return m.recorder
 }
 
-// Addr mocks base method
+// Addr mocks base method.
 func (m *MockClient) Addr() string {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Addr")
@@ -43,13 +45,27 @@ func (m *MockClient) Addr() string {
 	return ret0
 }
 
-// Addr indicates an expected call of Addr
+// Addr indicates an expected call of Addr.
 func (mr *MockClientMockRecorder) Addr() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Addr", reflect.TypeOf((*MockClient)(nil).Addr))
 }
 
-// DeleteBlob mocks base method
+// CheckReadiness mocks base method.
+func (m *MockClient) CheckReadiness() error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CheckReadiness")
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// CheckReadiness indicates an expected call of CheckReadiness.
+func (mr *MockClientMockRecorder) CheckReadiness() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CheckReadiness", reflect.TypeOf((*MockClient)(nil).CheckReadiness))
+}
+
+// DeleteBlob mocks base method.
 func (m *MockClient) DeleteBlob(arg0 core.Digest) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "DeleteBlob", arg0)
@@ -57,41 +73,41 @@ func (m *MockClient) DeleteBlob(arg0 core.Digest) error {
 	return ret0
 }
 
-// DeleteBlob indicates an expected call of DeleteBlob
+// DeleteBlob indicates an expected call of DeleteBlob.
 func (mr *MockClientMockRecorder) DeleteBlob(arg0 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteBlob", reflect.TypeOf((*MockClient)(nil).DeleteBlob), arg0)
 }
 
-// DownloadBlob mocks base method
-func (m *MockClient) DownloadBlob(arg0 string, arg1 core.Digest, arg2 io.Writer) error {
+// DownloadBlob mocks base method.
+func (m *MockClient) DownloadBlob(arg0 context.Context, arg1 string, arg2 core.Digest, arg3 io.Writer) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "DownloadBlob", arg0, arg1, arg2)
+	ret := m.ctrl.Call(m, "DownloadBlob", arg0, arg1, arg2, arg3)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// DownloadBlob indicates an expected call of DownloadBlob
-func (mr *MockClientMockRecorder) DownloadBlob(arg0, arg1, arg2 interface{}) *gomock.Call {
+// DownloadBlob indicates an expected call of DownloadBlob.
+func (mr *MockClientMockRecorder) DownloadBlob(arg0, arg1, arg2, arg3 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DownloadBlob", reflect.TypeOf((*MockClient)(nil).DownloadBlob), arg0, arg1, arg2)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DownloadBlob", reflect.TypeOf((*MockClient)(nil).DownloadBlob), arg0, arg1, arg2, arg3)
 }
 
-// DuplicateUploadBlob mocks base method
-func (m *MockClient) DuplicateUploadBlob(arg0 string, arg1 core.Digest, arg2 io.Reader, arg3 time.Duration) error {
+// DuplicateUploadBlob mocks base method.
+func (m *MockClient) DuplicateUploadBlob(arg0 string, arg1 core.Digest, arg2 io.Reader, arg3 uint64, arg4 time.Duration) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "DuplicateUploadBlob", arg0, arg1, arg2, arg3)
+	ret := m.ctrl.Call(m, "DuplicateUploadBlob", arg0, arg1, arg2, arg3, arg4)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// DuplicateUploadBlob indicates an expected call of DuplicateUploadBlob
-func (mr *MockClientMockRecorder) DuplicateUploadBlob(arg0, arg1, arg2, arg3 interface{}) *gomock.Call {
+// DuplicateUploadBlob indicates an expected call of DuplicateUploadBlob.
+func (mr *MockClientMockRecorder) DuplicateUploadBlob(arg0, arg1, arg2, arg3, arg4 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DuplicateUploadBlob", reflect.TypeOf((*MockClient)(nil).DuplicateUploadBlob), arg0, arg1, arg2, arg3)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DuplicateUploadBlob", reflect.TypeOf((*MockClient)(nil).DuplicateUploadBlob), arg0, arg1, arg2, arg3, arg4)
 }
 
-// ForceCleanup mocks base method
+// ForceCleanup mocks base method.
 func (m *MockClient) ForceCleanup(arg0 time.Duration) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "ForceCleanup", arg0)
@@ -99,13 +115,13 @@ func (m *MockClient) ForceCleanup(arg0 time.Duration) error {
 	return ret0
 }
 
-// ForceCleanup indicates an expected call of ForceCleanup
+// ForceCleanup indicates an expected call of ForceCleanup.
 func (mr *MockClientMockRecorder) ForceCleanup(arg0 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ForceCleanup", reflect.TypeOf((*MockClient)(nil).ForceCleanup), arg0)
 }
 
-// GetMetaInfo mocks base method
+// GetMetaInfo mocks base method.
 func (m *MockClient) GetMetaInfo(arg0 string, arg1 core.Digest) (*core.MetaInfo, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetMetaInfo", arg0, arg1)
@@ -114,13 +130,13 @@ func (m *MockClient) GetMetaInfo(arg0 string, arg1 core.Digest) (*core.MetaInfo,
 	return ret0, ret1
 }
 
-// GetMetaInfo indicates an expected call of GetMetaInfo
+// GetMetaInfo indicates an expected call of GetMetaInfo.
 func (mr *MockClientMockRecorder) GetMetaInfo(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMetaInfo", reflect.TypeOf((*MockClient)(nil).GetMetaInfo), arg0, arg1)
 }
 
-// GetPeerContext mocks base method
+// GetPeerContext mocks base method.
 func (m *MockClient) GetPeerContext() (core.PeerContext, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetPeerContext")
@@ -129,13 +145,13 @@ func (m *MockClient) GetPeerContext() (core.PeerContext, error) {
 	return ret0, ret1
 }
 
-// GetPeerContext indicates an expected call of GetPeerContext
+// GetPeerContext indicates an expected call of GetPeerContext.
 func (mr *MockClientMockRecorder) GetPeerContext() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetPeerContext", reflect.TypeOf((*MockClient)(nil).GetPeerContext))
 }
 
-// Locations mocks base method
+// Locations mocks base method.
 func (m *MockClient) Locations(arg0 core.Digest) ([]string, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Locations", arg0)
@@ -144,13 +160,13 @@ func (m *MockClient) Locations(arg0 core.Digest) ([]string, error) {
 	return ret0, ret1
 }
 
-// Locations indicates an expected call of Locations
+// Locations indicates an expected call of Locations.
 func (mr *MockClientMockRecorder) Locations(arg0 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Locations", reflect.TypeOf((*MockClient)(nil).Locations), arg0)
 }
 
-// OverwriteMetaInfo mocks base method
+// OverwriteMetaInfo mocks base method.
 func (m *MockClient) OverwriteMetaInfo(arg0 core.Digest, arg1 int64) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "OverwriteMetaInfo", arg0, arg1)
@@ -158,13 +174,27 @@ func (m *MockClient) OverwriteMetaInfo(arg0 core.Digest, arg1 int64) error {
 	return ret0
 }
 
-// OverwriteMetaInfo indicates an expected call of OverwriteMetaInfo
+// OverwriteMetaInfo indicates an expected call of OverwriteMetaInfo.
 func (mr *MockClientMockRecorder) OverwriteMetaInfo(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "OverwriteMetaInfo", reflect.TypeOf((*MockClient)(nil).OverwriteMetaInfo), arg0, arg1)
 }
 
-// ReplicateToRemote mocks base method
+// PrefetchBlob mocks base method.
+func (m *MockClient) PrefetchBlob(arg0 string, arg1 core.Digest) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "PrefetchBlob", arg0, arg1)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// PrefetchBlob indicates an expected call of PrefetchBlob.
+func (mr *MockClientMockRecorder) PrefetchBlob(arg0, arg1 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PrefetchBlob", reflect.TypeOf((*MockClient)(nil).PrefetchBlob), arg0, arg1)
+}
+
+// ReplicateToRemote mocks base method.
 func (m *MockClient) ReplicateToRemote(arg0 string, arg1 core.Digest, arg2 string) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "ReplicateToRemote", arg0, arg1, arg2)
@@ -172,13 +202,13 @@ func (m *MockClient) ReplicateToRemote(arg0 string, arg1 core.Digest, arg2 strin
 	return ret0
 }
 
-// ReplicateToRemote indicates an expected call of ReplicateToRemote
+// ReplicateToRemote indicates an expected call of ReplicateToRemote.
 func (mr *MockClientMockRecorder) ReplicateToRemote(arg0, arg1, arg2 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReplicateToRemote", reflect.TypeOf((*MockClient)(nil).ReplicateToRemote), arg0, arg1, arg2)
 }
 
-// Stat mocks base method
+// Stat mocks base method.
 func (m *MockClient) Stat(arg0 string, arg1 core.Digest) (*core.BlobInfo, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Stat", arg0, arg1)
@@ -187,13 +217,13 @@ func (m *MockClient) Stat(arg0 string, arg1 core.Digest) (*core.BlobInfo, error)
 	return ret0, ret1
 }
 
-// Stat indicates an expected call of Stat
+// Stat indicates an expected call of Stat.
 func (mr *MockClientMockRecorder) Stat(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Stat", reflect.TypeOf((*MockClient)(nil).Stat), arg0, arg1)
 }
 
-// StatLocal mocks base method
+// StatLocal mocks base method.
 func (m *MockClient) StatLocal(arg0 string, arg1 core.Digest) (*core.BlobInfo, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "StatLocal", arg0, arg1)
@@ -202,36 +232,36 @@ func (m *MockClient) StatLocal(arg0 string, arg1 core.Digest) (*core.BlobInfo, e
 	return ret0, ret1
 }
 
-// StatLocal indicates an expected call of StatLocal
+// StatLocal indicates an expected call of StatLocal.
 func (mr *MockClientMockRecorder) StatLocal(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StatLocal", reflect.TypeOf((*MockClient)(nil).StatLocal), arg0, arg1)
 }
 
-// TransferBlob mocks base method
-func (m *MockClient) TransferBlob(arg0 core.Digest, arg1 io.Reader) error {
+// TransferBlob mocks base method.
+func (m *MockClient) TransferBlob(arg0 core.Digest, arg1 io.Reader, arg2 uint64) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "TransferBlob", arg0, arg1)
+	ret := m.ctrl.Call(m, "TransferBlob", arg0, arg1, arg2)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// TransferBlob indicates an expected call of TransferBlob
-func (mr *MockClientMockRecorder) TransferBlob(arg0, arg1 interface{}) *gomock.Call {
+// TransferBlob indicates an expected call of TransferBlob.
+func (mr *MockClientMockRecorder) TransferBlob(arg0, arg1, arg2 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "TransferBlob", reflect.TypeOf((*MockClient)(nil).TransferBlob), arg0, arg1)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "TransferBlob", reflect.TypeOf((*MockClient)(nil).TransferBlob), arg0, arg1, arg2)
 }
 
-// UploadBlob mocks base method
-func (m *MockClient) UploadBlob(arg0 string, arg1 core.Digest, arg2 io.Reader) error {
+// UploadBlob mocks base method.
+func (m *MockClient) UploadBlob(arg0 context.Context, arg1 string, arg2 core.Digest, arg3 io.Reader, arg4 uint64) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UploadBlob", arg0, arg1, arg2)
+	ret := m.ctrl.Call(m, "UploadBlob", arg0, arg1, arg2, arg3, arg4)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// UploadBlob indicates an expected call of UploadBlob
-func (mr *MockClientMockRecorder) UploadBlob(arg0, arg1, arg2 interface{}) *gomock.Call {
+// UploadBlob indicates an expected call of UploadBlob.
+func (mr *MockClientMockRecorder) UploadBlob(arg0, arg1, arg2, arg3, arg4 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UploadBlob", reflect.TypeOf((*MockClient)(nil).UploadBlob), arg0, arg1, arg2)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UploadBlob", reflect.TypeOf((*MockClient)(nil).UploadBlob), arg0, arg1, arg2, arg3, arg4)
 }

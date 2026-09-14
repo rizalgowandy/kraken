@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -116,9 +116,7 @@ func TestDownloadManyTorrentsWithSeederAndManyLeechers(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for _, blob := range blobs {
-		blob := blob
 		for _, p := range leechers {
-			p := p
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -158,7 +156,6 @@ func TestDownloadTorrentWhenPeersAllHaveDifferentPiece(t *testing.T) {
 		copy(piece, blob.Content[start:stop])
 		require.NoError(tor.WritePiece(piecereader.NewBuffer(piece), i))
 
-		p := p
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -189,6 +186,14 @@ func TestSeederTTI(t *testing.T) {
 	seeder := mocks.newPeer(config, withEventLoop(w), withClock(clk))
 	seeder.writeTorrent(namespace, blob)
 	require.NoError(seeder.scheduler.Download(namespace, blob.Digest))
+
+	// Wait for the seeder to register with the tracker before starting the
+	// leecher. When the seeder's torrent is already complete, it announces via
+	// dispatcherCompleteEvent.apply. If the leecher's initial announce races
+	// ahead of the seeder's, the tracker returns no peers and the download
+	// hangs permanently (the mock clock is never advanced to trigger a retry).
+	w.waitFor(t, dispatcherCompleteEvent{})
+	w.waitFor(t, announceResultEvent{})
 
 	leecher := mocks.newPeer(config, withClock(clk))
 
@@ -386,7 +391,8 @@ func TestPullInactiveTorrent(t *testing.T) {
 	// Force announce the scheduler for this torrent to simulate a peer which
 	// is registered in tracker but does not have the torrent in memory.
 	ac := announceclient.New(seeder.pctx, hashring.NoopPassiveRing(hostlist.Fixture(mocks.trackerAddr)), nil)
-	ac.Announce(blob.Digest, blob.MetaInfo.InfoHash(), false, announceclient.V1)
+	_, _, err := ac.Announce(blob.Digest, blob.MetaInfo.InfoHash(), false, announceclient.V1)
+	require.NoError(err)
 
 	leecher := mocks.newPeer(config)
 
@@ -456,6 +462,47 @@ func TestSchedulerRemoveTorrent(t *testing.T) {
 
 	_, err := p.torrentArchive.Stat(namespace, blob.Digest)
 	require.True(os.IsNotExist(err))
+}
+
+func TestDownloadAfterCacheEviction(t *testing.T) {
+	require := require.New(t)
+
+	mocks, cleanup := newTestMocks(t)
+	defer cleanup()
+
+	blob := core.NewBlobFixture()
+	namespace := core.TagFixture()
+
+	mocks.metaInfoClient.EXPECT().Download(
+		namespace, blob.Digest).Return(blob.MetaInfo, nil).AnyTimes()
+
+	config := configFixture()
+	config.ConnState.BlacklistDuration = time.Second
+
+	seeder := mocks.newPeer(config)
+	seeder.writeTorrent(namespace, blob)
+	require.NoError(seeder.scheduler.Download(namespace, blob.Digest))
+
+	leecher := mocks.newPeer(config)
+
+	// Download the blob successfully.
+	require.NoError(leecher.scheduler.Download(namespace, blob.Digest))
+	leecher.checkTorrent(t, namespace, blob)
+
+	// Wait for connections to close and blacklist to expire so the
+	// leecher can reconnect to the seeder for the re-download.
+	h := blob.MetaInfo.InfoHash()
+	waitForConnRemoved(t, leecher.scheduler, seeder.pctx.PeerID, h)
+	time.Sleep(config.ConnState.BlacklistDuration)
+
+	// Simulate cache cleanup evicting the file from disk while the
+	// scheduler still considers the torrent complete in memory.
+	require.NoError(leecher.cads.Cache().DeleteFile(blob.Digest.Hex()))
+
+	// A second download for the same blob must succeed by
+	// re-downloading from the seeder.
+	require.NoError(leecher.scheduler.Download(namespace, blob.Digest))
+	leecher.checkTorrent(t, namespace, blob)
 }
 
 func TestSchedulerProbe(t *testing.T) {

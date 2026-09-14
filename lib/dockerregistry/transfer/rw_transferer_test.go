@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,14 +16,14 @@ package transfer
 import (
 	"bytes"
 	"errors"
-	"io/ioutil"
+	"io"
 	"testing"
 
 	"github.com/uber/kraken/build-index/tagclient"
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/lib/store"
-	"github.com/uber/kraken/mocks/build-index/tagclient"
-	"github.com/uber/kraken/mocks/origin/blobclient"
+	mocktagclient "github.com/uber/kraken/mocks/build-index/tagclient"
+	mockblobclient "github.com/uber/kraken/mocks/origin/blobclient"
 	"github.com/uber/kraken/utils/dockerutil"
 	"github.com/uber/kraken/utils/mockutil"
 	"github.com/uber/kraken/utils/testutil"
@@ -71,13 +71,13 @@ func TestReadWriteTransfererDownloadCachesBlob(t *testing.T) {
 	blob := core.NewBlobFixture()
 
 	mocks.originCluster.EXPECT().DownloadBlob(
-		namespace, blob.Digest, mockutil.MatchWriter(blob.Content)).Return(nil)
+		gomock.Any(), namespace, blob.Digest, mockutil.MatchWriter(blob.Content)).Return(nil)
 
 	// Downloading multiple times should only call blob download once.
 	for i := 0; i < 10; i++ {
 		result, err := transferer.Download(namespace, blob.Digest)
 		require.NoError(err)
-		b, err := ioutil.ReadAll(result)
+		b, err := io.ReadAll(result)
 		require.NoError(err)
 		require.Equal(blob.Content, b)
 	}

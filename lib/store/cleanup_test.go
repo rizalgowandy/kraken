@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,7 +15,6 @@ package store
 
 import (
 	"errors"
-	"io/ioutil"
 	"os"
 	"testing"
 	"time"
@@ -23,6 +22,7 @@ import (
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/lib/store/base"
 	"github.com/uber/kraken/lib/store/metadata"
+	"github.com/uber/kraken/utils/diskspaceutil"
 	"github.com/uber/kraken/utils/testutil"
 
 	"github.com/andres-erbsen/clock"
@@ -34,11 +34,15 @@ func fileOpFixture(clk clock.Clock) (base.FileState, base.FileOp, func()) {
 	var cleanup testutil.Cleanup
 	defer cleanup.Recover()
 
-	dir, err := ioutil.TempDir("/tmp", "cleanup_test")
+	dir, err := os.MkdirTemp("/tmp", "cleanup_test")
 	if err != nil {
 		panic(err)
 	}
-	cleanup.Add(func() { os.RemoveAll(dir) })
+	cleanup.Add(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			panic(err)
+		}
+	})
 
 	state := base.NewFileState(dir)
 
@@ -52,8 +56,7 @@ func TestCleanupManagerAddJob(t *testing.T) {
 
 	clk := clock.New()
 
-	m, err := newCleanupManager(clk, tally.NoopScope)
-	require.NoError(err)
+	m := newCleanupManager(clk, tally.NoopScope)
 	defer m.stop()
 
 	state, op, cleanup := fileOpFixture(clk)
@@ -71,7 +74,7 @@ func TestCleanupManagerAddJob(t *testing.T) {
 
 	time.Sleep(2 * time.Second)
 
-	_, err = op.GetFileStat(name)
+	_, err := op.GetFileStat(name)
 	require.True(os.IsNotExist(err))
 }
 
@@ -80,11 +83,12 @@ func TestCleanupManagerDeleteIdleFiles(t *testing.T) {
 
 	clk := clock.NewMock()
 	clk.Set(time.Now())
-	tti := 6 * time.Hour
-	ttl := 24 * time.Hour
+	config := CleanupConfig{
+		TTI: 6 * time.Hour,
+		TTL: 24 * time.Hour,
+	}
 
-	m, err := newCleanupManager(clk, tally.NoopScope)
-	require.NoError(err)
+	m := newCleanupManager(clk, tally.NoopScope)
 	defer m.stop()
 
 	state, op, cleanup := fileOpFixture(clk)
@@ -100,14 +104,14 @@ func TestCleanupManagerDeleteIdleFiles(t *testing.T) {
 		require.NoError(op.CreateFile(name, state, 0))
 	}
 
-	clk.Add(tti + 1)
+	clk.Add(config.TTI + 1)
 
 	active := names[50:]
 	for _, name := range active {
 		require.NoError(op.CreateFile(name, state, 0))
 	}
 
-	_, err = m.scan(op, tti, ttl)
+	_, err := m.cleanup(op, config, nil)
 	require.NoError(err)
 
 	for _, name := range idle {
@@ -125,11 +129,12 @@ func TestCleanupManagerDeleteExpiredFiles(t *testing.T) {
 
 	clk := clock.NewMock()
 	clk.Set(time.Now())
-	tti := 6 * time.Hour
-	ttl := 24 * time.Hour
+	config := CleanupConfig{
+		TTI: 6 * time.Hour,
+		TTL: 24 * time.Hour,
+	}
 
-	m, err := newCleanupManager(clk, tally.NoopScope)
-	require.NoError(err)
+	m := newCleanupManager(clk, tally.NoopScope)
 	defer m.stop()
 
 	state, op, cleanup := fileOpFixture(clk)
@@ -143,7 +148,7 @@ func TestCleanupManagerDeleteExpiredFiles(t *testing.T) {
 		require.NoError(op.CreateFile(name, state, 0))
 	}
 
-	_, err = m.scan(op, tti, ttl)
+	_, err := m.cleanup(op, config, nil)
 	require.NoError(err)
 
 	for _, name := range names {
@@ -151,9 +156,9 @@ func TestCleanupManagerDeleteExpiredFiles(t *testing.T) {
 		require.NoError(err)
 	}
 
-	clk.Add(ttl + 1)
+	clk.Add(config.TTL + 1)
 
-	_, err = m.scan(op, tti, ttl)
+	_, err = m.cleanup(op, config, nil)
 	require.NoError(err)
 
 	for _, name := range names {
@@ -167,11 +172,13 @@ func TestCleanupManagerSkipsPersistedFiles(t *testing.T) {
 
 	clk := clock.NewMock()
 	clk.Set(time.Now())
-	tti := 48 * time.Hour
-	ttl := 24 * time.Hour
 
-	m, err := newCleanupManager(clk, tally.NoopScope)
-	require.NoError(err)
+	config := CleanupConfig{
+		TTI: 48 * time.Hour,
+		TTL: 24 * time.Hour,
+	}
+
+	m := newCleanupManager(clk, tally.NoopScope)
 	defer m.stop()
 
 	state, op, cleanup := fileOpFixture(clk)
@@ -194,9 +201,9 @@ func TestCleanupManagerSkipsPersistedFiles(t *testing.T) {
 		require.NoError(err)
 	}
 
-	clk.Add(tti + 1)
+	clk.Add(config.TTI + 1)
 
-	_, err = m.scan(op, tti, ttl)
+	_, err := m.cleanup(op, config, nil)
 	require.NoError(err)
 
 	for _, name := range idle {
@@ -214,8 +221,7 @@ func TestCleanupManageDiskUsage(t *testing.T) {
 
 	clk := clock.New()
 
-	m, err := newCleanupManager(clk, tally.NoopScope)
-	require.NoError(err)
+	m := newCleanupManager(clk, tally.NoopScope)
 	defer m.stop()
 
 	state, op, cleanup := fileOpFixture(clk)
@@ -225,7 +231,11 @@ func TestCleanupManageDiskUsage(t *testing.T) {
 		require.NoError(op.CreateFile(core.DigestFixture().Hex(), state, 5))
 	}
 
-	usage, err := m.scan(op, time.Hour, time.Hour)
+	config := CleanupConfig{
+		TTI: 1 * time.Hour,
+		TTL: 1 * time.Hour,
+	}
+	usage, err := m.cleanup(op, config, nil)
 	require.NoError(err)
 	require.Equal(int64(500), usage)
 }
@@ -240,22 +250,70 @@ func TestCleanupManagerAggressive(t *testing.T) {
 	}
 
 	clk := clock.NewMock()
-	m, err := newCleanupManager(clk, tally.NoopScope)
-	require.NoError(err)
+	m := newCleanupManager(clk, tally.NoopScope)
 	defer m.stop()
 
 	_, op, cleanup := fileOpFixture(clk)
 	defer cleanup()
 
-	require.Equal(m.checkAggressiveCleanup(op, config, func() (int, error) {
-		return 90, nil
-	}), 5*time.Second)
+	require.True(m.shouldAggro(op, config, func() (diskspaceutil.UsageInfo, error) {
+		return diskspaceutil.UsageInfo{Util: 90}, nil
+	}))
 
-	require.Equal(m.checkAggressiveCleanup(op, config, func() (int, error) {
-		return 60, nil
-	}), 10*time.Second)
+	require.Equal(false, m.shouldAggro(op, config, func() (diskspaceutil.UsageInfo, error) {
+		return diskspaceutil.UsageInfo{Util: 60}, nil
+	}))
 
-	require.Equal(m.checkAggressiveCleanup(op, config, func() (int, error) {
-		return 0, errors.New("fake error")
-	}), 10*time.Second)
+	require.Equal(false, m.shouldAggro(op, config, func() (diskspaceutil.UsageInfo, error) {
+		return diskspaceutil.UsageInfo{}, errors.New("fake error")
+	}))
+}
+
+func TestCachedInAgentPolicy(t *testing.T) {
+	now := time.Now()
+	for name, tt := range map[string]struct {
+		left    fInfo
+		right   fInfo
+		wantRes int
+	}{
+		"left downloaded by consumer, right is not": {
+			left: fInfo{
+				downloadTime: now.Add(-1 * time.Minute),
+				accessTime:   now,
+			},
+			right: fInfo{
+				downloadTime: now,
+				accessTime:   now.Add(time.Second / 10),
+			},
+			wantRes: -1,
+		},
+		"left for sure in agent, right is not": {
+			left: fInfo{
+				downloadTime: now.Add(-46 * time.Minute),
+				accessTime:   now,
+			},
+			right: fInfo{
+				downloadTime: now.Add(-44 * time.Minute),
+				accessTime:   now,
+			},
+			wantRes: -1,
+		},
+		"no heuristic worked out, LRU policy used, right is more recently used": {
+			left: fInfo{
+				downloadTime: now.Add(-10 * time.Minute),
+				accessTime:   now.Add(-1 * time.Minute),
+			},
+			right: fInfo{
+				downloadTime: now.Add(-10 * time.Minute),
+				accessTime:   now,
+			},
+			wantRes: int(-1 * time.Minute),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require := require.New(t)
+			require.Equal(tt.wantRes, cachedInAgentPolicy(tt.left, tt.right))
+			require.Equal(-tt.wantRes, cachedInAgentPolicy(tt.right, tt.left))
+		})
+	}
 }

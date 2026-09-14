@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -22,12 +22,14 @@ import (
 	"github.com/uber-go/tally"
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/lib/backend/backenderrors"
+	"github.com/uber/kraken/utils/closers"
 	"github.com/uber/kraken/utils/memsize"
 	"github.com/uber/kraken/utils/randutil"
 	"github.com/uber/kraken/utils/testutil"
 
 	"github.com/go-chi/chi"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 func TestClientFactory(t *testing.T) {
@@ -35,7 +37,7 @@ func TestClientFactory(t *testing.T) {
 
 	config := Config{}
 	f := factory{}
-	_, err := f.Create(config, nil, tally.NoopScope)
+	_, err := f.Create(config, nil, tally.NoopScope, zap.NewNop().Sugar())
 	require.NoError(err)
 }
 
@@ -55,6 +57,7 @@ func TestHttpDownloadSuccess(t *testing.T) {
 	config := Config{DownloadURL: "http://" + addr + "/data/%s"}
 	client, err := NewClient(config, tally.NoopScope)
 	require.NoError(err)
+	defer closers.Close(client)
 
 	var b bytes.Buffer
 	require.NoError(client.Download(core.NamespaceFixture(), "data", &b))
@@ -67,7 +70,8 @@ func TestHttpDownloadFileNotFound(t *testing.T) {
 	r := chi.NewRouter()
 	r.Get("/data/{blob}", func(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte("file not found"))
+		_, err := w.Write([]byte("file not found"))
+		require.NoError(err)
 	})
 	addr, stop := testutil.StartServer(r)
 	defer stop()
@@ -75,6 +79,7 @@ func TestHttpDownloadFileNotFound(t *testing.T) {
 	config := Config{DownloadURL: "http://" + addr + "/data/%s"}
 	client, err := NewClient(config, tally.NoopScope)
 	require.NoError(err)
+	defer closers.Close(client)
 
 	var b bytes.Buffer
 	require.Equal(backenderrors.ErrBlobNotFound, client.Download(core.NamespaceFixture(), "data", &b))
@@ -90,6 +95,7 @@ func TestDownloadMalformedURLThrowsError(t *testing.T) {
 	config := Config{DownloadURL: "http://" + addr + "/data"}
 	client, err := NewClient(config, tally.NoopScope)
 	require.NoError(err)
+	defer closers.Close(client)
 
 	var b bytes.Buffer
 	require.Error(client.Download(core.NamespaceFixture(), "data", &b))

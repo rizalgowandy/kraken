@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/uber/kraken/lib/hostlist"
-	"github.com/uber/kraken/mocks/lib/healthcheck"
+	mockhealthcheck "github.com/uber/kraken/mocks/lib/healthcheck"
 	"github.com/uber/kraken/utils/stringset"
 
 	"github.com/golang/mock/gomock"

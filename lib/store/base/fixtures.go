@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,7 +15,6 @@ package base
 
 import (
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 
@@ -29,23 +28,27 @@ func fileStatesFixture() (state1, state2, state3 FileState, run func()) {
 	cleanup := &testutil.Cleanup{}
 	defer cleanup.Recover()
 
-	root, err := ioutil.TempDir("/tmp", "store_test")
+	root, err := os.MkdirTemp("/tmp", "store_test")
 	if err != nil {
 		log.Fatal(err)
 	}
-	cleanup.Add(func() { os.RemoveAll(root) })
+	cleanup.Add(func() {
+		if err := os.RemoveAll(root); err != nil {
+			log.Fatal(err)
+		}
+	})
 
-	state1Dir, err := ioutil.TempDir(root, "state1")
+	state1Dir, err := os.MkdirTemp(root, "state1")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	state2Dir, err := ioutil.TempDir(root, "state2")
+	state2Dir, err := os.MkdirTemp(root, "state2")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	state3Dir, err := ioutil.TempDir(root, "state3")
+	state3Dir, err := os.MkdirTemp(root, "state3")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -133,21 +136,33 @@ func (b *fileStoreTestBundle) recreateStore() {
 func fileStoreDefaultFixture() (*fileStoreTestBundle, func()) {
 	return fileStoreFixture(func(clk clock.Clock) *localFileStore {
 		store := NewLocalFileStore(clk)
-		return store.(*localFileStore)
+		localStore, ok := store.(*localFileStore)
+		if !ok {
+			panic(fmt.Sprintf("expected *localFileStore, got %T", store))
+		}
+		return localStore
 	})
 }
 
 func fileStoreCASFixture() (*fileStoreTestBundle, func()) {
 	return fileStoreFixture(func(clk clock.Clock) *localFileStore {
 		store := NewCASFileStore(clk)
-		return store.(*localFileStore)
+		localStore, ok := store.(*localFileStore)
+		if !ok {
+			panic(fmt.Sprintf("expected *localFileStore, got %T", store))
+		}
+		return localStore
 	})
 }
 
 func fileStoreLRUFixture(size int) (*fileStoreTestBundle, func()) {
 	return fileStoreFixture(func(clk clock.Clock) *localFileStore {
 		store := NewLRUFileStore(size, clk)
-		return store.(*localFileStore)
+		localStore, ok := store.(*localFileStore)
+		if !ok {
+			panic(fmt.Sprintf("expected *localFileStore, got %T", store))
+		}
+		return localStore
 	})
 }
 

@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -47,4 +47,10 @@ func (c NoopClient) Download(namespace, name string, dst io.Writer) error {
 // List always returns nil.
 func (c NoopClient) List(prefix string, opts ...ListOption) (*ListResult, error) {
 	return nil, nil
+}
+
+// Close closes the client and releases any held resources.
+func (c NoopClient) Close() error {
+	// No resources to close for noop client
+	return nil
 }

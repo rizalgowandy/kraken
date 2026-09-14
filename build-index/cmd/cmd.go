@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,6 +15,7 @@ package cmd
 
 import (
 	"flag"
+	"runtime"
 
 	"github.com/uber/kraken/build-index/tagclient"
 	"github.com/uber/kraken/build-index/tagserver"
@@ -32,19 +33,23 @@ import (
 	"github.com/uber/kraken/metrics"
 	"github.com/uber/kraken/nginx"
 	"github.com/uber/kraken/origin/blobclient"
+	"github.com/uber/kraken/utils/closers"
 	"github.com/uber/kraken/utils/configutil"
+	"github.com/uber/kraken/utils/httputil"
 	"github.com/uber/kraken/utils/log"
 
 	"github.com/uber-go/tally"
+	"go.opentelemetry.io/otel"
 	"go.uber.org/zap"
 )
 
 // Flags defines build-index CLI flags.
 type Flags struct {
-	Port          int
-	ConfigFile    string
-	KrakenCluster string
-	SecretsFile   string
+	Port                 int
+	ConfigFile           string
+	KrakenCluster        string
+	SecretsFile          string
+	MutexProfileFraction int
 }
 
 // ParseFlags parses build-index CLI flags.
@@ -58,6 +63,9 @@ func ParseFlags() *Flags {
 		&flags.KrakenCluster, "cluster", "", "cluster name (e.g. prod01-zone1)")
 	flag.StringVar(
 		&flags.SecretsFile, "secrets", "", "path to a secrets YAML file to load into configuration")
+	flag.IntVar(
+		&flags.MutexProfileFraction, "mutex-profile-fraction", 0,
+		"rate for runtime.SetMutexProfileFraction; 0 disables, 1 records all events")
 	flag.Parse()
 	return &flags
 }
@@ -98,6 +106,10 @@ func Run(flags *Flags, opts ...Option) {
 		o(&overrides)
 	}
 
+	if flags.MutexProfileFraction > 0 {
+		runtime.SetMutexProfileFraction(flags.MutexProfileFraction)
+	}
+
 	var config Config
 	if overrides.config != nil {
 		config = *overrides.config
@@ -116,7 +128,10 @@ func Run(flags *Flags, opts ...Option) {
 		log.SetGlobalLogger(overrides.logger.Sugar())
 	} else {
 		zlog := log.ConfigureLogger(config.ZapLogging)
-		defer zlog.Sync()
+		defer func() {
+			// if flushing logs fails, we can't do anything about the error.
+			_ = zlog.Sync() //nolint:errcheck
+		}()
 	}
 
 	stats := overrides.metrics
@@ -126,25 +141,25 @@ func Run(flags *Flags, opts ...Option) {
 			log.Fatalf("Failed to init metrics: %s", err)
 		}
 		stats = s
-		defer closer.Close()
+		defer closers.Close(closer)
 	}
-
-	go metrics.EmitVersion(stats)
 
 	ss, err := store.NewSimpleStore(config.Store, stats)
 	if err != nil {
 		log.Fatalf("Error creating simple store: %s", err)
 	}
 
-	backends, err := backend.NewManager(config.Backends, config.Auth, stats)
+	backends, err := backend.NewManager(config.BackendManager, config.Backends, config.Auth, stats)
 	if err != nil {
 		log.Fatalf("Error creating backend manager: %s", err)
 	}
+	defer closers.Close(backends)
 
 	tls, err := config.TLS.BuildClient()
 	if err != nil {
 		log.Fatalf("Error building client tls config: %s", err)
 	}
+	defer closers.Close(httputil.MonitorCertExpiration(&config.TLS, stats))
 
 	origins, err := config.Origin.Build(upstream.WithHealthCheck(healthcheck.Default(tls)))
 	if err != nil {
@@ -204,12 +219,13 @@ func Run(flags *Flags, opts ...Option) {
 		log.Fatalf("Error creating write-back manager: %s", err)
 	}
 
-	tagStore := tagstore.New(config.TagStore, stats, ss, backends, writeBackManager)
+	tagStore := tagstore.New(config.TagStore, ss, backends, writeBackManager)
 
 	depResolver, err := tagtype.NewMap(config.TagTypes, originClient)
 	if err != nil {
 		log.Fatalf("Error creating tag type manager: %s", err)
 	}
+	tracer := otel.Tracer("kraken-build-index")
 
 	server := tagserver.New(
 		config.TagServer,
@@ -222,7 +238,8 @@ func Run(flags *Flags, opts ...Option) {
 		remotes,
 		tagReplicationManager,
 		tagclient.NewProvider(tls),
-		depResolver)
+		depResolver,
+		tracer)
 	go func() {
 		log.Fatal(server.ListenAndServe())
 	}()

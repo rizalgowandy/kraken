@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -20,11 +20,12 @@ import (
 	"strings"
 
 	"github.com/uber/kraken/core"
+	"github.com/uber/kraken/utils/closers"
 	"github.com/uber/kraken/utils/log"
 	"github.com/uber/kraken/utils/randutil"
 
 	"github.com/andres-erbsen/clock"
-	"github.com/garyburd/redigo/redis"
+	"github.com/gomodule/redigo/redis"
 )
 
 func peerSetKey(h core.InfoHash, window int64) string {
@@ -104,7 +105,7 @@ func NewRedisStore(config RedisConfig, clk clock.Clock) (*RedisStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dial redis: %s", err)
 	}
-	c.Close()
+	closers.Close(c)
 
 	return s, nil
 }
@@ -129,7 +130,7 @@ func (s *RedisStore) peerSetWindows() []int64 {
 // UpdatePeer writes p to Redis with a TTL.
 func (s *RedisStore) UpdatePeer(h core.InfoHash, p *core.PeerInfo) error {
 	c := s.pool.Get()
-	defer c.Close()
+	defer closers.Close(c)
 
 	w := s.curPeerSetWindow()
 	expireAt := w + int64(s.config.PeerSetWindowSize.Seconds())*int64(s.config.MaxPeerSetWindows)
@@ -158,7 +159,7 @@ func (s *RedisStore) UpdatePeer(h core.InfoHash, p *core.PeerInfo) error {
 // GetPeers returns at most n PeerInfos associated with h.
 func (s *RedisStore) GetPeers(h core.InfoHash, n int) ([]*core.PeerInfo, error) {
 	c := s.pool.Get()
-	defer c.Close()
+	defer closers.Close(c)
 
 	// Try to sample n peers from each window in randomized order until we have
 	// collected n distinct peers. This achieves random sampling across multiple

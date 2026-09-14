@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -25,7 +25,7 @@ upstream agent-server {
 }
 
 server {
-  listen {{.port}};
+  listen {{.port}}{{if .ssl_enabled}} ssl{{end}}{{if .listen_backlog}} backlog={{.listen_backlog}}{{end}};
 
   {{range .allowed_cidrs}}
     allow {{.}};
@@ -37,12 +37,12 @@ server {
   access_log {{.access_log_path}};
   error_log {{.error_log_path}};
 
+  proxy_read_timeout {{if .proxy_read_timeout}}{{.proxy_read_timeout}}{{else}}10m{{end}};
+
   gzip on;
   gzip_types text/plain test/csv application/json;
 
-  location /health {
-    proxy_pass http://agent-server;
-  }
+{{healthEndpoint "agent-server"}}
 
   location / {
     proxy_pass http://registry-backend;

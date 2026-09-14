@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,19 +17,17 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/uber/kraken/mocks/origin/blobclient"
-	"github.com/uber/kraken/mocks/tracker/originstore"
-	"github.com/uber/kraken/mocks/tracker/peerstore"
-	"github.com/uber/kraken/tracker/peerhandoutpolicy"
-
 	"github.com/golang/mock/gomock"
 	"github.com/uber-go/tally"
+	mockblobclient "github.com/uber/kraken/mocks/origin/blobclient"
+	mockoriginstore "github.com/uber/kraken/mocks/tracker/originstore"
+	mockpeerstore "github.com/uber/kraken/mocks/tracker/peerstore"
+	"github.com/uber/kraken/tracker/peerhandoutpolicy"
 )
 
 type serverMocks struct {
 	config        Config
 	policy        *peerhandoutpolicy.PriorityPolicy
-	ctrl          *gomock.Controller
 	peerStore     *mockpeerstore.MockStore
 	originStore   *mockoriginstore.MockStore
 	originCluster *mockblobclient.MockClusterClient

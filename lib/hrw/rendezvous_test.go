@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -25,6 +25,7 @@ import (
 
 	"github.com/spaolacci/murmur3"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestScoreFunctionFloatPrecision(t *testing.T) {
@@ -143,12 +144,12 @@ func TestKeyDistributionAndNodeChanges(t *testing.T) {
 }
 
 func testKeyDistribution(numKeys int, hash HashFactory, scoreFunc UIntToFloat, t *testing.T) {
-	rh, nodekeys := RendezvousHashFixture(numKeys, hash, scoreFunc, 100, 200, 400, 800)
+	rh, nodekeys := RendezvousHashFixture(t, numKeys, hash, scoreFunc, 100, 200, 400, 800)
 	assertKeyDistribution(t, rh, nodekeys, numKeys, 1500.0, 0.1)
 }
 
 func testAddNodes(numKeys int, hash HashFactory, scoreFunc UIntToFloat, t *testing.T) {
-	rh, nodekeys := RendezvousHashFixture(numKeys, hash, scoreFunc, 100, 200, 400, 800)
+	rh, nodekeys := RendezvousHashFixture(t, numKeys, hash, scoreFunc, 100, 200, 400, 800)
 
 	rh.RemoveNode("1")
 	assert.Equal(t, len(rh.Nodes), 3)
@@ -167,7 +168,7 @@ func testAddNodes(numKeys int, hash HashFactory, scoreFunc UIntToFloat, t *testi
 }
 
 func testRemoveNodes(numKeys int, hash HashFactory, scoreFunc UIntToFloat, t *testing.T) {
-	rh, nodekeys := RendezvousHashFixture(numKeys, hash, scoreFunc, 100, 200, 400, 800)
+	rh, nodekeys := RendezvousHashFixture(t, numKeys, hash, scoreFunc, 100, 200, 400, 800)
 
 	rh.AddNode("4", 200)
 	nodekeys["4"] = make(map[string]struct{})
@@ -193,8 +194,11 @@ func testRemoveNodes(numKeys int, hash HashFactory, scoreFunc UIntToFloat, t *te
 }
 
 func testReturnNodesLength(numKeys int, hash HashFactory, scoreFunc UIntToFloat, t *testing.T) {
-	rh, _ := RendezvousHashFixture(0, hash, scoreFunc, 100, 200, 400, 800)
-	keys := HashKeyFixture(1, hash)
+	require := require.New(t)
+
+	rh, _ := RendezvousHashFixture(t, 0, hash, scoreFunc, 100, 200, 400, 800)
+	keys, err := HashKeyFixture(1, hash)
+	require.NoError(err)
 
 	var scores []float64
 	for _, node := range rh.Nodes {
@@ -207,8 +211,11 @@ func testReturnNodesLength(numKeys int, hash HashFactory, scoreFunc UIntToFloat,
 }
 
 func testReturnNodesOrder(numKeys int, hash HashFactory, scoreFunc UIntToFloat, t *testing.T) {
-	rh, _ := RendezvousHashFixture(0, hash, scoreFunc, 100, 200, 400, 800)
-	keys := HashKeyFixture(1, hash)
+	require := require.New(t)
+
+	rh, _ := RendezvousHashFixture(t, 0, hash, scoreFunc, 100, 200, 400, 800)
+	keys, err := HashKeyFixture(1, hash)
+	require.NoError(err)
 
 	var scores []float64
 	for _, node := range rh.Nodes {
@@ -224,7 +231,7 @@ func testReturnNodesOrder(numKeys int, hash HashFactory, scoreFunc UIntToFloat, 
 }
 
 func testAddingCapacity(numKeys int, hash HashFactory, scoreFunc UIntToFloat, t *testing.T) {
-	rh, nodekeys := RendezvousHashFixture(numKeys, hash, scoreFunc, 100, 200, 400, 800)
+	rh, nodekeys := RendezvousHashFixture(t, numKeys, hash, scoreFunc, 100, 200, 400, 800)
 
 	_, index := rh.GetNode("3")
 	rh.Nodes[index].Weight = 1000
@@ -249,7 +256,7 @@ func testAddingCapacity(numKeys int, hash HashFactory, scoreFunc UIntToFloat, t 
 }
 
 func testRemovingCapacity(numKeys int, hash HashFactory, scoreFunc UIntToFloat, t *testing.T) {
-	rh, nodekeys := RendezvousHashFixture(numKeys, hash, scoreFunc, 100, 200, 400, 800)
+	rh, nodekeys := RendezvousHashFixture(t, numKeys, hash, scoreFunc, 100, 200, 400, 800)
 
 	_, index := rh.GetNode("3")
 	rh.Nodes[index].Weight = 200

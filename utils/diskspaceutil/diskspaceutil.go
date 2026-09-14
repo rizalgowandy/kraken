@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,17 +19,30 @@ import (
 
 const path = "/"
 
-// Helper method to get disk util.
-func DiskSpaceUtil() (int, error) {
+// Disk size and usage info
+type UsageInfo struct {
+	Util       int
+	TotalBytes uint64
+	UsedBytes  uint64
+	FreeBytes  uint64
+}
+
+// Get disk size and usage info.
+func Usage() (UsageInfo, error) {
 	fs := syscall.Statfs_t{}
 	err := syscall.Statfs(path, &fs)
 	if err != nil {
-		return 0, err
+		return UsageInfo{}, err
 	}
 
 	diskAll := fs.Blocks * uint64(fs.Bsize)
 	diskFree := fs.Bfree * uint64(fs.Bsize)
 	diskUsed := diskAll - diskFree
-	return int(diskUsed * 100 / diskAll), nil
-
+	util := int(diskUsed * 100 / diskAll)
+	return UsageInfo{
+		Util:       util,
+		TotalBytes: diskAll,
+		FreeBytes:  diskFree,
+		UsedBytes:  diskUsed,
+	}, nil
 }

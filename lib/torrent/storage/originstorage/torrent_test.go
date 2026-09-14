@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,7 +15,7 @@ package originstorage
 
 import (
 	"bytes"
-	"io/ioutil"
+	"io"
 	"sync"
 	"testing"
 
@@ -36,7 +36,7 @@ func TestTorrentCreate(t *testing.T) {
 	blob := core.SizedBlobFixture(7, 2)
 	mi := blob.MetaInfo
 
-	cas.CreateCacheFile(mi.Digest().Hex(), bytes.NewReader(blob.Content))
+	require.NoError(cas.CreateCacheFile(mi.Digest().Hex(), bytes.NewReader(blob.Content)))
 
 	tor, err := NewTorrent(cas, mi)
 	require.NoError(err)
@@ -64,7 +64,7 @@ func TestTorrentGetPieceReaderConcurrent(t *testing.T) {
 	blob := core.SizedBlobFixture(7, 2)
 	mi := blob.MetaInfo
 
-	cas.CreateCacheFile(mi.Digest().Hex(), bytes.NewReader(blob.Content))
+	require.NoError(cas.CreateCacheFile(mi.Digest().Hex(), bytes.NewReader(blob.Content)))
 
 	tor, err := NewTorrent(cas, mi)
 	require.NoError(err)
@@ -78,8 +78,10 @@ func TestTorrentGetPieceReaderConcurrent(t *testing.T) {
 			end := start + int(tor.PieceLength(i))
 			r, err := tor.GetPieceReader(i)
 			require.NoError(err)
-			defer r.Close()
-			result, err := ioutil.ReadAll(r)
+			defer func() {
+				require.NoError(r.Close())
+			}()
+			result, err := io.ReadAll(r)
 			require.NoError(err)
 			require.Equal(blob.Content[start:end], result)
 		}(i)
@@ -97,7 +99,7 @@ func TestTorrentWritePieceError(t *testing.T) {
 	blob := core.SizedBlobFixture(7, 2)
 	mi := blob.MetaInfo
 
-	cas.CreateCacheFile(mi.Digest().Hex(), bytes.NewReader(blob.Content))
+	require.NoError(cas.CreateCacheFile(mi.Digest().Hex(), bytes.NewReader(blob.Content)))
 
 	tor, err := NewTorrent(cas, mi)
 	require.NoError(err)

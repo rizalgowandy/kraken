@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -26,8 +26,10 @@ import (
 	"github.com/uber/kraken/lib/backend"
 	"github.com/uber/kraken/lib/backend/backenderrors"
 	"github.com/uber/kraken/lib/backend/registrybackend/security"
+	"github.com/uber/kraken/utils/closers"
 	"github.com/uber/kraken/utils/dockerutil"
 	"github.com/uber/kraken/utils/httputil"
+	"go.uber.org/zap"
 	yaml "gopkg.in/yaml.v2"
 )
 
@@ -40,7 +42,7 @@ func init() {
 type tagClientFactory struct{}
 
 func (f *tagClientFactory) Create(
-	confRaw interface{}, masterAuthConfig backend.AuthConfig, stats tally.Scope) (backend.Client, error) {
+	confRaw interface{}, masterAuthConfig backend.AuthConfig, stats tally.Scope, _ *zap.SugaredLogger) (backend.Client, error) {
 
 	confBytes, err := yaml.Marshal(confRaw)
 	if err != nil {
@@ -137,7 +139,7 @@ func (c *TagClient) Download(namespace, name string, dst io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("check blob exists: %s", err)
 	}
-	defer resp.Body.Close()
+	defer closers.Close(resp.Body)
 
 	if resp.StatusCode == http.StatusNotFound {
 		return backenderrors.ErrBlobNotFound
@@ -161,4 +163,9 @@ func (c *TagClient) Upload(namespace, name string, src io.Reader) error {
 // List is not supported as users can list directly from registry.
 func (c *TagClient) List(prefix string, opts ...backend.ListOption) (*backend.ListResult, error) {
 	return nil, errors.New("not supported")
+}
+
+// Close is noop as no resources to close
+func (c *TagClient) Close() error {
+	return nil
 }

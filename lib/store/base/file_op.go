@@ -158,21 +158,22 @@ func (op *localFileOp) lockHelper(
 		return err
 	}
 	var loaded bool
-	if l == _lockLevelPeek {
+	switch l {
+	case _lockLevelPeek:
 		loaded = op.s.fileMap.LoadForPeek(name, func(name string, entry FileEntry) {
 			if err = op.verifyStateHelper(name, entry); err != nil {
 				return
 			}
 			f(name, entry)
 		})
-	} else if l == _lockLevelRead {
+	case _lockLevelRead:
 		loaded = op.s.fileMap.LoadForRead(name, func(name string, entry FileEntry) {
 			if err = op.verifyStateHelper(name, entry); err != nil {
 				return
 			}
 			f(name, entry)
 		})
-	} else if l == _lockLevelWrite {
+	case _lockLevelWrite:
 		loaded = op.s.fileMap.LoadForWrite(name, func(name string, entry FileEntry) {
 			if err = op.verifyStateHelper(name, entry); err != nil {
 				return
@@ -255,9 +256,7 @@ func (op *localFileOp) createFileHelper(
 		// correct error message.
 		// Since TryStore() updates LAT of existing entry, it's unlikely that
 		// the entry would be deleted before this function returns.
-		if loadErr := op.lockHelper(name, _lockLevelRead, func(name string, entry FileEntry) {
-			return
-		}); loadErr != nil {
+		if loadErr := op.lockHelper(name, _lockLevelRead, func(name string, entry FileEntry) {}); loadErr != nil {
 			return loadErr
 		}
 		return os.ErrExist

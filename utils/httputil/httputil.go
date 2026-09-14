@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,16 +19,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/url"
 	"time"
 
 	"github.com/cenkalti/backoff"
 	"github.com/go-chi/chi"
-
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/utils/handler"
+	"github.com/uber/kraken/utils/log"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var retryableCodes = map[int]struct{}{
@@ -52,8 +53,12 @@ type StatusError struct {
 
 // NewStatusError returns a new StatusError.
 func NewStatusError(resp *http.Response) StatusError {
-	defer resp.Body.Close()
-	respBytes, err := ioutil.ReadAll(resp.Body)
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			log.Errorf("Failed to close response body: %s", err)
+		}
+	}()
+	respBytes, err := io.ReadAll(resp.Body)
 	respDump := string(respBytes)
 	if err != nil {
 		respDump = fmt.Sprintf("failed to dump response: %s", err)
@@ -243,6 +248,13 @@ func DisableHTTPFallback() SendOption {
 	}
 }
 
+// EnableHTTPFallback enables http fallback when https request fails.
+func EnableHTTPFallback() SendOption {
+	return func(o *sendOptions) {
+		o.httpFallbackDisabled = false
+	}
+}
+
 // SendTLS sets the transport with TLS config for the HTTP client.
 func SendTLS(config *tls.Config) SendOption {
 	return func(o *sendOptions) {
@@ -291,6 +303,19 @@ func Send(method, rawurl string, options ...SendOption) (*http.Response, error) 
 	}
 	for _, o := range options {
 		o(opts)
+	}
+
+	baseTransport := opts.transport
+	if baseTransport == nil {
+		baseTransport = http.DefaultTransport
+	}
+	// Only wrap with otelhttp.NewTransport if there's a valid span context.
+	// This prevents interference with the Docker registry API's manifest format selection
+	// when tracing is not being used.
+	if spanCtx := trace.SpanContextFromContext(opts.ctx); spanCtx.IsValid() {
+		opts.transport = otelhttp.NewTransport(baseTransport)
+	} else {
+		opts.transport = baseTransport
 	}
 
 	req, err := newRequest(method, opts)
@@ -375,8 +400,8 @@ func Delete(url string, options ...SendOption) (*http.Response, error) {
 
 // PollAccepted wraps GET requests for endpoints which require 202-polling.
 func PollAccepted(
-	url string, b backoff.BackOff, options ...SendOption) (*http.Response, error) {
-
+	url string, b backoff.BackOff, options ...SendOption,
+) (*http.Response, error) {
 	b.Reset()
 	for {
 		resp, err := Get(url, options...)
@@ -450,8 +475,8 @@ func newRequest(method string, opts *sendOptions) (*http.Request, error) {
 }
 
 func fallbackToHTTP(
-	client *http.Client, method string, opts *sendOptions) (*http.Response, error) {
-
+	client *http.Client, method string, opts *sendOptions,
+) (*http.Response, error) {
 	req, err := newRequest(method, opts)
 	if err != nil {
 		return nil, err
@@ -459,11 +484,4 @@ func fallbackToHTTP(
 	req.URL.Scheme = "http"
 
 	return client.Do(req)
-}
-
-func min(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
-	}
-	return b
 }

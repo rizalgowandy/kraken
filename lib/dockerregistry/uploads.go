@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -24,6 +24,7 @@ import (
 	"github.com/uber/kraken/lib/dockerregistry/transfer"
 	"github.com/uber/kraken/lib/store"
 	"github.com/uber/kraken/lib/store/metadata"
+	"github.com/uber/kraken/utils/log"
 
 	storagedriver "github.com/docker/distribution/registry/storage/driver"
 )
@@ -131,8 +132,10 @@ func (u *casUploads) putBlobContent(path string, content []byte) error {
 		return fmt.Errorf("create cache file: %w", err)
 	}
 	if err := u.transferer.Upload("TODO", d, store.NewBufferFileReader(content)); err != nil {
+		log.With("digest", d, "size", len(content)).Errorf("Failed to upload blob: %s", err)
 		return fmt.Errorf("upload: %w", err)
 	}
+	log.With("digest", d, "size", len(content)).Debug("Blob uploaded")
 	return nil
 }
 
@@ -177,13 +180,15 @@ func (u *casUploads) list(path string, subtype PathSubType) ([]string, error) {
 	switch subtype {
 	case _hashstates:
 		var paths []string
-		u.cas.RangeUploadMetadata(uuid, func(md metadata.Metadata) error {
+		if err := u.cas.RangeUploadMetadata(uuid, func(md metadata.Metadata) error {
 			if hs, ok := md.(*hashStateMetadata); ok {
 				p := stdpath.Join("localstore", "_uploads", uuid, hs.dockerPath())
 				paths = append(paths, p)
 			}
 			return nil
-		})
+		}); err != nil {
+			return nil, err
+		}
 		return paths, nil
 	}
 	return nil, InvalidRequestError{path}
@@ -206,8 +211,10 @@ func (u *casUploads) move(uploadPath, blobPath string) error {
 		return fmt.Errorf("get cache file: %w", err)
 	}
 	if err := u.transferer.Upload("TODO", d, f); err != nil {
+		log.With("uuid", uuid, "digest", d).Errorf("Failed to upload blob: %s", err)
 		return fmt.Errorf("upload: %w", err)
 	}
+	log.With("uuid", uuid, "digest", d).Debug("Blob uploaded")
 	return nil
 }
 

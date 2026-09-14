@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,12 +14,12 @@
 package blobclient
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math"
 	"net/http"
 	"net/url"
@@ -27,18 +27,28 @@ import (
 	"strings"
 	"time"
 
+	"github.com/uber/kraken/utils/closers"
+
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/utils/httputil"
 	"github.com/uber/kraken/utils/memsize"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
+
+var _ Client = &HTTPClient{}
 
 // Client provides a wrapper around all Server HTTP endpoints.
 type Client interface {
 	Addr() string
 
+	CheckReadiness() error
 	Locations(d core.Digest) ([]string, error)
 	DeleteBlob(d core.Digest) error
-	TransferBlob(d core.Digest, blob io.Reader) error
+	TransferBlob(d core.Digest, blob io.Reader, size uint64) error
 
 	Stat(namespace string, d core.Digest) (*core.BlobInfo, error)
 	StatLocal(namespace string, d core.Digest) (*core.BlobInfo, error)
@@ -46,10 +56,11 @@ type Client interface {
 	GetMetaInfo(namespace string, d core.Digest) (*core.MetaInfo, error)
 	OverwriteMetaInfo(d core.Digest, pieceLength int64) error
 
-	UploadBlob(namespace string, d core.Digest, blob io.Reader) error
-	DuplicateUploadBlob(namespace string, d core.Digest, blob io.Reader, delay time.Duration) error
+	UploadBlob(ctx context.Context, namespace string, d core.Digest, blob io.Reader, size uint64) error
+	DuplicateUploadBlob(namespace string, d core.Digest, blob io.Reader, size uint64, delay time.Duration) error
 
-	DownloadBlob(namespace string, d core.Digest, dst io.Writer) error
+	DownloadBlob(ctx context.Context, namespace string, d core.Digest, dst io.Writer) error
+	PrefetchBlob(namespace string, d core.Digest) error
 
 	ReplicateToRemote(namespace string, d core.Digest, remoteDNS string) error
 
@@ -63,6 +74,7 @@ type HTTPClient struct {
 	addr      string
 	chunkSize uint64
 	tls       *tls.Config
+	tracer    trace.Tracer
 }
 
 // Option allows setting optional HTTPClient parameters.
@@ -83,6 +95,7 @@ func New(addr string, opts ...Option) *HTTPClient {
 	c := &HTTPClient{
 		addr:      addr,
 		chunkSize: 32 * memsize.MB,
+		tracer:    otel.Tracer("kraken-origin-client"),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -95,6 +108,17 @@ func (c *HTTPClient) Addr() string {
 	return c.addr
 }
 
+func (c *HTTPClient) CheckReadiness() error {
+	_, err := httputil.Get(
+		fmt.Sprintf("http://%s/readiness", c.addr),
+		httputil.SendTimeout(5*time.Second),
+		httputil.SendTLS(c.tls))
+	if err != nil {
+		return fmt.Errorf("origin not ready: %v", err)
+	}
+	return nil
+}
+
 // Locations returns the origin server addresses which d is sharded on.
 func (c *HTTPClient) Locations(d core.Digest) ([]string, error) {
 	r, err := httputil.Get(
@@ -104,8 +128,11 @@ func (c *HTTPClient) Locations(d core.Digest) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer closers.Close(r.Body)
 	locs := strings.Split(r.Header.Get("Origin-Locations"), ",")
-	if len(locs) == 0 {
+	// strings.Split("", ",") returns []string{""} (slice with one empty string)
+	// so len(locs) == 0 is never true. The check should be locs[0] == "".
+	if locs[0] == "" {
 		return nil, errors.New("no locations found")
 	}
 	return locs, nil
@@ -165,42 +192,96 @@ func (c *HTTPClient) DeleteBlob(d core.Digest) error {
 
 // TransferBlob uploads a blob to a single origin server. Unlike its cousin UploadBlob,
 // TransferBlob is an internal API which does not replicate the blob.
-func (c *HTTPClient) TransferBlob(d core.Digest, blob io.Reader) error {
+func (c *HTTPClient) TransferBlob(d core.Digest, blob io.Reader, size uint64) error {
 	tc := newTransferClient(c.addr, c.tls)
-	return runChunkedUpload(tc, d, blob, int64(c.chunkSize))
+	return runChunkedUpload(tc, d, blob, size, int64(c.chunkSize))
 }
 
 // UploadBlob uploads and replicates blob to the origin cluster, asynchronously
 // backing the blob up to the remote storage configured for namespace.
-func (c *HTTPClient) UploadBlob(namespace string, d core.Digest, blob io.Reader) error {
-	uc := newUploadClient(c.addr, namespace, _publicUpload, 0, c.tls)
-	return runChunkedUpload(uc, d, blob, int64(c.chunkSize))
+func (c *HTTPClient) UploadBlob(ctx context.Context, namespace string, d core.Digest, blob io.Reader, size uint64) error {
+	ctx, span := c.tracer.Start(ctx, "blobclient.upload_blob",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("component", "origin-client"),
+			attribute.String("operation", "upload_blob"),
+			attribute.String("namespace", namespace),
+			attribute.String("blob.digest", d.Hex()),
+		),
+	)
+	defer span.End()
+
+	uc := newUploadClientWithContext(ctx, c.addr, namespace, _publicUpload, 0, c.tls)
+	if err := runChunkedUpload(uc, d, blob, size, int64(c.chunkSize)); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "upload failed")
+		return err
+	}
+
+	span.SetStatus(codes.Ok, "upload completed")
+	return nil
 }
 
 // DuplicateUploadBlob duplicates an blob upload request, which will attempt to
 // write-back at the given delay.
 func (c *HTTPClient) DuplicateUploadBlob(
-	namespace string, d core.Digest, blob io.Reader, delay time.Duration) error {
-
+	namespace string, d core.Digest, blob io.Reader, size uint64, delay time.Duration,
+) error {
 	uc := newUploadClient(c.addr, namespace, _duplicateUpload, delay, c.tls)
-	return runChunkedUpload(uc, d, blob, int64(c.chunkSize))
+	return runChunkedUpload(uc, d, blob, size, int64(c.chunkSize))
 }
 
 // DownloadBlob downloads blob for d. If the blob of d is not available yet
 // (i.e. still downloading), returns 202 httputil.StatusError, indicating that
-// the request shoudl be retried later. If not blob exists for d, returns a 404
+// the request should be retried later. If not blob exists for d, returns a 404
 // httputil.StatusError.
-func (c *HTTPClient) DownloadBlob(namespace string, d core.Digest, dst io.Writer) error {
+func (c *HTTPClient) DownloadBlob(ctx context.Context, namespace string, d core.Digest, dst io.Writer) error {
+	ctx, span := c.tracer.Start(ctx, "blobclient.download_blob",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("component", "origin-client"),
+			attribute.String("operation", "download_blob"),
+			attribute.String("namespace", namespace),
+			attribute.String("blob.digest", d.Hex()),
+			attribute.String("origin.address", c.addr),
+		),
+	)
+	defer span.End()
+
 	r, err := httputil.Get(
 		fmt.Sprintf("http://%s/namespace/%s/blobs/%s", c.addr, url.PathEscape(namespace), d),
+		httputil.SendContext(ctx),
+		httputil.SendTLS(c.tls))
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "download request failed")
+		return err
+	}
+	defer closers.Close(r.Body)
+
+	written, err := io.Copy(dst, r.Body)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to copy response body")
+		return fmt.Errorf("copy body: %s", err)
+	}
+
+	span.SetAttributes(attribute.Int64("blob.size_bytes", written))
+	span.SetStatus(codes.Ok, "download completed")
+	return nil
+}
+
+// PrefetchBlob is an asynchronous, idempotent operation that preheats the origin's cache with the given blob.
+// If the blob is not present, it is downloaded asynchronously. If the blob is present, this is a no-op.
+func (c *HTTPClient) PrefetchBlob(namespace string, d core.Digest) error {
+	r, err := httputil.Post(
+		fmt.Sprintf("http://%s/namespace/%s/blobs/%s/prefetch", c.addr, url.PathEscape(namespace), d),
+		httputil.SendAcceptedCodes(http.StatusOK, http.StatusAccepted),
 		httputil.SendTLS(c.tls))
 	if err != nil {
 		return err
 	}
-	defer r.Body.Close()
-	if _, err := io.Copy(dst, r.Body); err != nil {
-		return fmt.Errorf("copy body: %s", err)
-	}
+	defer closers.Close(r.Body)
 	return nil
 }
 
@@ -228,8 +309,8 @@ func (c *HTTPClient) GetMetaInfo(namespace string, d core.Digest) (*core.MetaInf
 	if err != nil {
 		return nil, err
 	}
-	defer r.Body.Close()
-	raw, err := ioutil.ReadAll(r.Body)
+	defer closers.Close(r.Body)
+	raw, err := io.ReadAll(r.Body)
 	if err != nil {
 		return nil, fmt.Errorf("read body: %s", err)
 	}
@@ -259,7 +340,7 @@ func (c *HTTPClient) GetPeerContext() (core.PeerContext, error) {
 	if err != nil {
 		return pctx, err
 	}
-	defer r.Body.Close()
+	defer closers.Close(r.Body)
 	if err := json.NewDecoder(r.Body).Decode(&pctx); err != nil {
 		return pctx, err
 	}
@@ -275,11 +356,4 @@ func (c *HTTPClient) ForceCleanup(ttl time.Duration) error {
 		httputil.SendTimeout(2*time.Minute),
 		httputil.SendTLS(c.tls))
 	return err
-}
-
-func min(a, b int64) int64 {
-	if a < b {
-		return a
-	}
-	return b
 }

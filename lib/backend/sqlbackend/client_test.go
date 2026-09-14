@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -24,6 +24,8 @@ import (
 	"github.com/uber-go/tally"
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/lib/backend/backenderrors"
+	"github.com/uber/kraken/utils/closers"
+	"go.uber.org/zap"
 )
 
 func generateSingleTag(sqlClient *Client, repo string, tag string) Tag {
@@ -48,7 +50,7 @@ func TestClientFactory(t *testing.T) {
 	config := Config{Dialect: "sqlite3", ConnectionString: ":memory:"}
 
 	f := factory{}
-	_, err := f.Create(config, nil, tally.NoopScope)
+	_, err := f.Create(config, nil, tally.NoopScope, zap.NewNop().Sugar())
 	require.NoError(t, err)
 }
 
@@ -56,7 +58,7 @@ func TestClientFactoryAuth(t *testing.T) {
 	config := Config{Dialect: "sqlite3", ConnectionString: ":memory:"}
 
 	f := factory{}
-	_, err := f.Create(config, nil, tally.NoopScope)
+	_, err := f.Create(config, nil, tally.NoopScope, zap.NewNop().Sugar())
 	require.NoError(t, err)
 }
 
@@ -102,6 +104,7 @@ func TestGetDBConnectionString(t *testing.T) {
 
 func TestStat(t *testing.T) {
 	sqlClient := newClient()
+	defer closers.Close(sqlClient)
 	tag := generateSingleTag(sqlClient, "batman", "robin")
 
 	res, err := sqlClient.Stat("", fmt.Sprintf("%s:%s", tag.Repository, tag.Tag))
@@ -110,19 +113,24 @@ func TestStat(t *testing.T) {
 }
 
 func TestStatNotExist(t *testing.T) {
-	res, err := newClient().Stat("", "bad-repo:bad-tag")
+	sqlClient := newClient()
+	defer closers.Close(sqlClient)
+	res, err := sqlClient.Stat("", "bad-repo:bad-tag")
 	assert.Nil(t, res)
 	assert.EqualError(t, err, backenderrors.ErrBlobNotFound.Error())
 }
 
 func TestStatBadTagName(t *testing.T) {
-	res, err := newClient().Stat("", "this_is_wrong:")
+	sqlClient := newClient()
+	defer closers.Close(sqlClient)
+	res, err := sqlClient.Stat("", "this_is_wrong:")
 	assert.Nil(t, res)
 	assert.Error(t, err)
 }
 
 func TestDownload(t *testing.T) {
 	sqlClient := newClient()
+	defer closers.Close(sqlClient)
 	tag := generateSingleTag(sqlClient, "ironman", "mk-vii")
 
 	w := new(bytes.Buffer)
@@ -132,19 +140,24 @@ func TestDownload(t *testing.T) {
 }
 
 func TestDownloadNotExist(t *testing.T) {
+	sqlClient := newClient()
+	defer closers.Close(sqlClient)
 	w := new(bytes.Buffer)
-	err := newClient().Download("", "bad-repo:bad-tag", w)
+	err := sqlClient.Download("", "bad-repo:bad-tag", w)
 	assert.EqualError(t, err, backenderrors.ErrBlobNotFound.Error())
 }
 
 func TestDownloadBadTagName(t *testing.T) {
+	sqlClient := newClient()
+	defer closers.Close(sqlClient)
 	w := new(bytes.Buffer)
-	err := newClient().Download("", ":this_is_wrong", w)
+	err := sqlClient.Download("", ":this_is_wrong", w)
 	assert.Error(t, err)
 }
 
 func TestUploadNewAndUpdateTag(t *testing.T) {
 	sqlClient := newClient()
+	defer closers.Close(sqlClient)
 	newRepoTag := "new-repo:new-tag"
 	res, err := sqlClient.Stat("", newRepoTag)
 	assert.Nil(t, res)
@@ -172,12 +185,15 @@ func TestUploadNewAndUpdateTag(t *testing.T) {
 }
 
 func TestUploadBadTagName(t *testing.T) {
-	err := newClient().Upload("", "::this_is_wrong:::", strings.NewReader("bleh"))
+	sqlClient := newClient()
+	defer closers.Close(sqlClient)
+	err := sqlClient.Upload("", "::this_is_wrong:::", strings.NewReader("bleh"))
 	assert.Error(t, err)
 }
 
 func TestListCatalog(t *testing.T) {
 	sqlClient := newClient()
+	defer closers.Close(sqlClient)
 	tags := []string{
 		"a:1",
 		"a:2",
@@ -195,6 +211,7 @@ func TestListCatalog(t *testing.T) {
 
 func TestListTags(t *testing.T) {
 	sqlClient := newClient()
+	defer closers.Close(sqlClient)
 	tags := []string{
 		"a:1",
 		"a:2",
@@ -211,7 +228,9 @@ func TestListTags(t *testing.T) {
 }
 
 func TestListTagsNotFound(t *testing.T) {
-	res, err := newClient().List("no-tag-exists/_manifests/tags")
+	sqlClient := newClient()
+	defer closers.Close(sqlClient)
+	res, err := sqlClient.List("no-tag-exists/_manifests/tags")
 	require.NotNil(t, res)
 	assert.NoError(t, err)
 
@@ -220,6 +239,7 @@ func TestListTagsNotFound(t *testing.T) {
 
 func TestListBadTags(t *testing.T) {
 	sqlClient := newClient()
+	defer closers.Close(sqlClient)
 	res, err := sqlClient.List("many-tags/_manifests/tagz")
 	require.NotNil(t, res)
 	assert.NoError(t, err)

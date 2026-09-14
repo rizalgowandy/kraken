@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,10 +19,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/andres-erbsen/clock"
 	"github.com/uber/kraken/lib/store/metadata"
 	"github.com/uber/kraken/utils/log"
-
-	"github.com/andres-erbsen/clock"
+	"go.uber.org/zap"
 )
 
 // FileMap is a thread-safe name -> FileEntry map.
@@ -93,7 +93,8 @@ func NewLATFileMap(clk clock.Clock) FileMap {
 func (fm *lruFileMap) get(name string) (*fileEntryWithAccessTime, bool) {
 	if element, ok := fm.elements[name]; ok {
 		fm.queue.MoveToFront(element)
-		return element.Value.(*fileEntryWithAccessTime), ok
+		entry, ok := element.Value.(*fileEntryWithAccessTime)
+		return entry, ok
 	}
 	return nil, false
 }
@@ -120,7 +121,10 @@ func (fm *lruFileMap) syncGetAndTouch(name string) (*fileEntryWithAccessTime, bo
 		// Only update if new timestamp is <timeResolution> newer than previous
 		// value.
 		e.lastAccessTime = t
-		e.fe.SetMetadata(metadata.NewLastAccessTime(t))
+		_, err := e.fe.SetMetadata(metadata.NewLastAccessTime(t))
+		if err != nil {
+			log.Desugar().Error("Error setting metadata", zap.String("name", e.fe.GetName()), zap.Error(err))
+		}
 	}
 
 	return e, true
@@ -137,7 +141,8 @@ func (fm *lruFileMap) add(name string, e *fileEntryWithAccessTime) bool {
 
 func (fm *lruFileMap) getOldest() (*fileEntryWithAccessTime, bool) {
 	if e := fm.queue.Back(); e != nil {
-		return e.Value.(*fileEntryWithAccessTime), true
+		entry, ok := e.Value.(*fileEntryWithAccessTime)
+		return entry, ok
 	}
 	return nil, false
 }
@@ -146,7 +151,8 @@ func (fm *lruFileMap) remove(name string) (*fileEntryWithAccessTime, bool) {
 	if e, ok := fm.elements[name]; ok {
 		delete(fm.elements, name)
 		fm.queue.Remove(e)
-		return e.Value.(*fileEntryWithAccessTime), ok
+		entry, ok := e.Value.(*fileEntryWithAccessTime)
+		return entry, ok
 	}
 	return nil, false
 }
@@ -230,7 +236,10 @@ func (fm *lruFileMap) TryStore(name string, entry FileEntry, f func(string, File
 			// Only update if new timestamp is <timeResolution> newer than
 			// previous value.
 			e.lastAccessTime = t
-			e.fe.SetMetadata(metadata.NewLastAccessTime(t))
+			_, err := e.fe.SetMetadata(metadata.NewLastAccessTime(t))
+			if err != nil {
+				log.Desugar().Error("Error setting metadata", zap.String("name", e.fe.GetName()), zap.Error(err))
+			}
 		}
 
 		return false

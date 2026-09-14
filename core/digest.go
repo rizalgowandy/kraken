@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -23,11 +23,6 @@ import (
 	"strings"
 )
 
-const (
-	// DigestEmptyTar is the sha256 digest of an empty tar file.
-	DigestEmptyTar = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-)
-
 // DigestList is a list of digests.
 type DigestList []Digest
 
@@ -42,12 +37,17 @@ func (l DigestList) Value() (driver.Value, error) {
 
 // Scan unmarshals []byte to a list of Digest.
 func (l *DigestList) Scan(src interface{}) error {
-	return json.Unmarshal(src.([]byte), l)
+	bytes, ok := src.([]byte)
+	if !ok {
+		return fmt.Errorf("expected []byte, got %T", src)
+	}
+	return json.Unmarshal(bytes, l)
 }
 
 // Digest can be represented in a string like "<algorithm>:<hex_digest_string>"
 // Example:
-// 	 sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+//
+//	sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 type Digest struct {
 	algo string
 	hex  string
@@ -103,7 +103,11 @@ func (d Digest) Value() (driver.Value, error) {
 
 // Scan unmarshals []byte to a Digest.
 func (d *Digest) Scan(src interface{}) error {
-	return json.Unmarshal(src.([]byte), d)
+	bytes, ok := src.([]byte)
+	if !ok {
+		return fmt.Errorf("expected []byte, got %T", src)
+	}
+	return json.Unmarshal(bytes, d)
 }
 
 // UnmarshalJSON unmarshals "<algorithm>:<hex_digest_string>" to Digest.
@@ -132,14 +136,16 @@ func (d Digest) String() string {
 
 // Algo returns the algo part of the digest.
 // Example:
-//   sha256
+//
+//	sha256
 func (d Digest) Algo() string {
 	return d.algo
 }
 
 // Hex returns the hex part of the digest.
 // Example:
-//   e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+//
+//	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 func (d Digest) Hex() string {
 	return d.hex
 }

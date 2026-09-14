@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -20,12 +20,15 @@ import (
 	"io"
 	"time"
 
+	"github.com/uber/kraken/utils/closers"
+
 	"github.com/uber-go/tally"
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/lib/backend"
 	"github.com/uber/kraken/lib/backend/backenderrors"
 	"github.com/uber/kraken/utils/httputil"
 
+	"go.uber.org/zap"
 	"gopkg.in/yaml.v2"
 )
 
@@ -38,7 +41,7 @@ func init() {
 type factory struct{}
 
 func (f *factory) Create(
-	confRaw interface{}, masterAuthConfig backend.AuthConfig, stats tally.Scope) (backend.Client, error) {
+	confRaw interface{}, masterAuthConfig backend.AuthConfig, stats tally.Scope, _ *zap.SugaredLogger) (backend.Client, error) {
 
 	confBytes, err := yaml.Marshal(confRaw)
 	if err != nil {
@@ -104,7 +107,7 @@ func (c *Client) Download(namespace, name string, dst io.Writer) error {
 		}
 		return err
 	}
-	defer resp.Body.Close()
+	defer closers.Close(resp.Body)
 	if _, err := io.Copy(dst, resp.Body); err != nil {
 		return fmt.Errorf("copy: %s", err)
 	}
@@ -119,4 +122,10 @@ func (c *Client) Upload(namespace, name string, src io.Reader) error {
 // List is not supported.
 func (c *Client) List(prefix string, opts ...backend.ListOption) (*backend.ListResult, error) {
 	return nil, errors.New("not supported")
+}
+
+// Close closes the client and releases any held resources.
+func (c *Client) Close() error {
+	// No resources to close for http client
+	return nil
 }

@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,7 +16,11 @@ package hrw
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"strconv"
+	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // NodeKeysTable is a Node to keys map utility type
@@ -32,7 +36,7 @@ type NodeKeysTable map[string]map[string]struct{}
 // RendezvousHashFixture(10, sha256.New, 100, 200, 300) there will be a RendezvousHash object created
 // with 3 nodes "0": 100, "1":200, "2":300
 // The fixture will return RendezvousHash object and the node key buckets table
-func RendezvousHashFixture(numKeys int, hashFactory HashFactory, scoreFunc UIntToFloat, weights ...int) (*RendezvousHash, map[string]map[string]struct{}) {
+func RendezvousHashFixture(t *testing.T, numKeys int, hashFactory HashFactory, scoreFunc UIntToFloat, weights ...int) (*RendezvousHash, map[string]map[string]struct{}) {
 	rh := NewRendezvousHash(hashFactory, scoreFunc)
 
 	keys := NodeKeysTable{}
@@ -46,7 +50,8 @@ func RendezvousHashFixture(numKeys int, hashFactory HashFactory, scoreFunc UIntT
 	}
 	// 1500 the sum of all weights
 	for i := 0; i < numKeys; i++ {
-		rand.Read(b)
+		_, err := rand.Read(b)
+		require.NoError(t, err)
 		key := hex.EncodeToString(b)
 		nodes := rh.GetOrderedNodes(key, 1)
 		keys[nodes[0].Label][key] = struct{}{}
@@ -55,16 +60,18 @@ func RendezvousHashFixture(numKeys int, hashFactory HashFactory, scoreFunc UIntT
 	return rh, keys
 }
 
-//HashKeyFixture generate #numkeys random keys according to a hash function
-func HashKeyFixture(numKeys int, hashFactory HashFactory) []string {
+// HashKeyFixture generate #numkeys random keys according to a hash function
+func HashKeyFixture(numKeys int, hashFactory HashFactory) ([]string, error) {
 	var keys []string
 	b := make([]byte, 64)
 
 	for i := 0; i < numKeys; i++ {
-		rand.Read(b)
+		if _, err := rand.Read(b); err != nil {
+			return nil, fmt.Errorf("failed to read random bytes: %w", err)
+		}
 		key := hex.EncodeToString(b)
 		keys = append(keys, key)
 	}
 
-	return keys
+	return keys, nil
 }

@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -74,7 +74,7 @@ func (a *TorrentArchive) CreateTorrent(namespace string, d core.Digest) (storage
 }
 
 // GetTorrent returns a Torrent for an existing file on disk. If the file does
-// not exist, attempts to re-fetch the file from the storae backend configured
+// not exist, attempts to re-fetch the file from the storage backend configured
 // for namespace in a background goroutine, and returns os.ErrNotExist.
 func (a *TorrentArchive) GetTorrent(namespace string, d core.Digest) (storage.Torrent, error) {
 	mi, err := a.getMetaInfo(namespace, d)

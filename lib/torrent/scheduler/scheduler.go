@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -25,6 +25,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/uber/kraken/core"
+	"github.com/uber/kraken/lib/observability"
 	"github.com/uber/kraken/lib/torrent/networkevent"
 	"github.com/uber/kraken/lib/torrent/scheduler/announcequeue"
 	"github.com/uber/kraken/lib/torrent/scheduler/announcer"
@@ -33,6 +34,7 @@ import (
 	"github.com/uber/kraken/lib/torrent/scheduler/torrentlog"
 	"github.com/uber/kraken/lib/torrent/storage"
 	"github.com/uber/kraken/tracker/announceclient"
+	"github.com/uber/kraken/utils/closers"
 	"github.com/uber/kraken/utils/log"
 )
 
@@ -219,7 +221,7 @@ func (s *scheduler) Stop() {
 		s.log().Info("Stopping scheduler...")
 
 		close(s.done)
-		s.listener.Close()
+		closers.Close(s.listener)
 		s.eventLoop.send(shutdownEvent{})
 
 		// Waits for all loops to stop.
@@ -231,6 +233,7 @@ func (s *scheduler) Stop() {
 	})
 }
 
+// doDownload schedules a blob for download, returning only once it's downloaded.
 func (s *scheduler) doDownload(namespace string, d core.Digest) (size int64, err error) {
 	t, err := s.torrentArchive.CreateTorrent(namespace, d)
 	if err != nil {
@@ -251,6 +254,7 @@ func (s *scheduler) doDownload(namespace string, d core.Digest) (size int64, err
 // Download downloads the torrent given metainfo. Once the torrent is downloaded,
 // it will begin seeding asynchronously.
 func (s *scheduler) Download(namespace string, d core.Digest) error {
+	s.stats.Counter("download_requests").Inc(1)
 	start := time.Now()
 	size, err := s.doDownload(namespace, d)
 	if err != nil {
@@ -273,7 +277,7 @@ func (s *scheduler) Download(namespace string, d core.Digest) error {
 		s.torrentlog.DownloadFailure(namespace, d, size, err)
 	} else {
 		downloadTime := time.Since(start)
-		recordDownloadTime(s.stats, size, downloadTime)
+		observability.EmitDownloadPerformance(s.stats, observability.TORRENT_DOWNLOAD, size, downloadTime)
 		s.torrentlog.DownloadSuccess(namespace, d, size, downloadTime)
 	}
 	return err
@@ -319,14 +323,14 @@ func (s *scheduler) listenLoop() {
 		nc, err := s.listener.Accept()
 		if err != nil {
 			// TODO Need some way to make this gracefully exit.
-			s.log().Infof("Error accepting new conn, exiting listen loop: %s", err)
+			s.log().Errorf("Error accepting new conn, exiting listen loop: %s", err)
 			return
 		}
 		go func() {
 			pc, err := s.handshaker.Accept(nc)
 			if err != nil {
 				s.log().Infof("Error accepting handshake, closing net conn: %s", err)
-				nc.Close()
+				closers.Close(nc)
 				return
 			}
 			s.eventLoop.send(incomingHandshakeEvent{pc})
@@ -399,7 +403,7 @@ func (s *scheduler) initializeOutgoingHandshake(
 	p *core.PeerInfo, info *storage.TorrentInfo, rb conn.RemoteBitfields, namespace string) {
 
 	addr := fmt.Sprintf("%s:%d", p.IP, p.Port)
-	result, err := s.handshaker.Initialize(p.PeerID, addr, info, rb, namespace)
+	result, err := s.handshaker.Initialize(p.PeerID, p.Origin, addr, info, rb, namespace)
 	if err != nil {
 		s.log(
 			"peer", p.PeerID,

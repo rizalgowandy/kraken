@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,6 +16,7 @@ package healthcheck
 import (
 	"sync"
 
+	"github.com/uber/kraken/utils/log"
 	"github.com/uber/kraken/utils/stringset"
 )
 
@@ -68,7 +69,9 @@ func (s *state) failed(addr string) {
 	defer s.Unlock()
 
 	s.trend[addr] = max(min(s.trend[addr]-1, -1), -s.config.Fails)
-	if s.trend[addr] == -s.config.Fails {
+	// Only emit log when host changes state from healthy to unhealthy.
+	if s.trend[addr] == -s.config.Fails && s.healthy.Has(addr) {
+		log.With("address", addr).Warn("Host marked as unhealthy")
 		s.healthy.Remove(addr)
 	}
 }
@@ -90,18 +93,4 @@ func (s *state) getHealthy() stringset.Set {
 	defer s.Unlock()
 
 	return s.healthy.Copy()
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

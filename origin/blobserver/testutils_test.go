@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,6 +15,7 @@ package blobserver
 
 import (
 	"bytes"
+	"context"
 	"testing"
 	"time"
 
@@ -33,9 +34,10 @@ import (
 	"github.com/uber/kraken/lib/hostlist"
 	"github.com/uber/kraken/lib/metainfogen"
 	"github.com/uber/kraken/lib/store"
-	"github.com/uber/kraken/mocks/lib/backend"
-	"github.com/uber/kraken/mocks/lib/persistedretry"
-	"github.com/uber/kraken/mocks/origin/blobclient"
+	"github.com/uber/kraken/lib/store/disk"
+	mockbackend "github.com/uber/kraken/mocks/lib/backend"
+	mockpersistedretry "github.com/uber/kraken/mocks/lib/persistedretry"
+	mockblobclient "github.com/uber/kraken/mocks/origin/blobclient"
 	"github.com/uber/kraken/origin/blobclient"
 	"github.com/uber/kraken/utils/log"
 	"github.com/uber/kraken/utils/stringset"
@@ -58,7 +60,8 @@ func newHashRing(maxReplica int) hashring.Ring {
 	return hashring.New(
 		hashring.Config{MaxReplica: maxReplica},
 		hostlist.Fixture(master1, master2, master3),
-		healthcheck.IdentityFilter{})
+		healthcheck.IdentityFilter{},
+		tally.NoopScope)
 }
 
 func hashRingNoReplica() hashring.Ring   { return newHashRing(1) }
@@ -102,11 +105,16 @@ type testServer struct {
 	writeBackManager *mockpersistedretry.MockManager
 	clk              *clock.Mock
 	cleanup          func()
+
+	// setDiskStore configures the Server's disk.Store. There's no way to inject
+	// this via New yet (migration to disk.Store is in progress), so this closure
+	// captures the Server built below to allow tests to still wire it in.
+	setDiskStore func(*disk.Store)
 }
 
 func newTestServer(
-	t *testing.T, host string, ring hashring.Ring, cp *testClientProvider) *testServer {
-
+	t *testing.T, host string, ring hashring.Ring, cp *testClientProvider,
+) *testServer {
 	var cleanup testutil.Cleanup
 	defer cleanup.Recover()
 
@@ -155,12 +163,13 @@ func newTestServer(
 		writeBackManager: writeBackManager,
 		clk:              clk,
 		cleanup:          cleanup.Run,
+		setDiskStore:     func(d *disk.Store) { s.diskStore = d },
 	}
 }
 
-func (s *testServer) backendClient(namespace string) *mockbackend.MockClient {
+func (s *testServer) backendClient(namespace string, mustReady bool) *mockbackend.MockClient {
 	client := mockbackend.NewMockClient(s.ctrl)
-	if err := s.backendManager.Register(namespace, client); err != nil {
+	if err := s.backendManager.Register(namespace, client, mustReady); err != nil {
 		panic(err)
 	}
 	return client
@@ -186,6 +195,6 @@ func computeBlobForHosts(ring hashring.Ring, hosts ...string) *core.BlobFixture 
 
 func ensureHasBlob(t *testing.T, c blobclient.Client, namespace string, blob *core.BlobFixture) {
 	var buf bytes.Buffer
-	require.NoError(t, c.DownloadBlob(namespace, blob.Digest, &buf))
+	require.NoError(t, c.DownloadBlob(context.Background(), namespace, blob.Digest, &buf))
 	require.Equal(t, string(blob.Content), buf.String())
 }

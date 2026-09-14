@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,8 +17,10 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
+	"runtime"
 
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/lib/backend"
@@ -37,8 +39,10 @@ import (
 	"github.com/uber/kraken/nginx"
 	"github.com/uber/kraken/origin/blobclient"
 	"github.com/uber/kraken/origin/blobserver"
+	"github.com/uber/kraken/utils/closers"
 	"github.com/uber/kraken/utils/configutil"
 	"github.com/uber/kraken/utils/handler"
+	"github.com/uber/kraken/utils/httputil"
 	"github.com/uber/kraken/utils/log"
 	"github.com/uber/kraken/utils/netutil"
 
@@ -50,14 +54,15 @@ import (
 
 // Flags defines origin CLI flags.
 type Flags struct {
-	PeerIP             string
-	PeerPort           int
-	BlobServerHostName string
-	BlobServerPort     int
-	ConfigFile         string
-	Zone               string
-	KrakenCluster      string
-	SecretsFile        string
+	PeerIP               string
+	PeerPort             int
+	BlobServerHostName   string
+	BlobServerPort       int
+	ConfigFile           string
+	Zone                 string
+	KrakenCluster        string
+	SecretsFile          string
+	MutexProfileFraction int
 }
 
 // ParseFlags parses origin CLI flags.
@@ -79,6 +84,9 @@ func ParseFlags() *Flags {
 		&flags.KrakenCluster, "cluster", "", "cluster name (e.g. prod01-zone1)")
 	flag.StringVar(
 		&flags.SecretsFile, "secrets", "", "path to a secrets YAML file to load into configuration")
+	flag.IntVar(
+		&flags.MutexProfileFraction, "mutex-profile-fraction", 0,
+		"rate for runtime.SetMutexProfileFraction; 0 disables, 1 records all events")
 	flag.Parse()
 	return &flags
 }
@@ -122,6 +130,10 @@ func Run(flags *Flags, opts ...Option) {
 		o(&overrides)
 	}
 
+	if flags.MutexProfileFraction > 0 {
+		runtime.SetMutexProfileFraction(flags.MutexProfileFraction)
+	}
+
 	var config Config
 	if overrides.config != nil {
 		config = *overrides.config
@@ -140,7 +152,11 @@ func Run(flags *Flags, opts ...Option) {
 		log.SetGlobalLogger(overrides.logger.Sugar())
 	} else {
 		zlog := log.ConfigureLogger(config.ZapLogging)
-		defer zlog.Sync()
+		defer func() {
+			if err := zlog.Sync(); err != nil {
+				fmt.Printf("Failed to sync logger: %s", err)
+			}
+		}()
 	}
 
 	stats := overrides.metrics
@@ -150,10 +166,8 @@ func Run(flags *Flags, opts ...Option) {
 			log.Fatalf("Failed to init metrics: %s", err)
 		}
 		stats = s
-		defer closer.Close()
+		defer closers.Close(closer)
 	}
-
-	go metrics.EmitVersion(stats)
 
 	var hostname string
 	if flags.BlobServerHostName == "" {
@@ -186,10 +200,11 @@ func Run(flags *Flags, opts ...Option) {
 		log.Fatalf("Failed to create peer context: %s", err)
 	}
 
-	backendManager, err := backend.NewManager(config.Backends, config.Auth, stats)
+	backendManager, err := backend.NewManager(config.BackendManager, config.Backends, config.Auth, stats)
 	if err != nil {
 		log.Fatalf("Error creating backend manager: %s", err)
 	}
+	defer closers.Close(backendManager)
 
 	localDB, err := localdb.New(config.LocalDB)
 	if err != nil {
@@ -232,6 +247,7 @@ func Run(flags *Flags, opts ...Option) {
 	if err != nil {
 		log.Fatalf("Error building client tls config: %s", err)
 	}
+	defer closers.Close(httputil.MonitorCertExpiration(&config.TLS, stats))
 
 	healthCheckFilter := healthcheck.NewFilter(config.HealthCheck, healthcheck.Default(tls))
 
@@ -239,24 +255,11 @@ func Run(flags *Flags, opts ...Option) {
 		config.HashRing,
 		cluster,
 		healthCheckFilter,
+		stats,
 		hashring.WithWatcher(backend.NewBandwidthWatcher(backendManager)))
 	go hashRing.Monitor(nil)
 
-	addr := fmt.Sprintf("%s:%d", hostname, flags.BlobServerPort)
-	if !hashRing.Contains(addr) {
-		// When DNS is used for hash ring membership, the members will be IP
-		// addresses instead of hostnames.
-		ip, err := netutil.GetLocalIP()
-		if err != nil {
-			log.Fatalf("Error getting local ip: %s", err)
-		}
-		addr = fmt.Sprintf("%s:%d", ip, flags.BlobServerPort)
-		if !hashRing.Contains(addr) {
-			log.Fatalf(
-				"Neither %s nor %s (port %d) found in hash ring",
-				hostname, ip, flags.BlobServerPort)
-		}
-	}
+	addr := validateOriginMembership(hashRing, hostname, flags.BlobServerPort, config.Cluster.DNS)
 
 	server, err := blobserver.New(
 		config.BlobServer,
@@ -288,6 +291,35 @@ func Run(flags *Flags, opts ...Option) {
 			"server": nginx.GetServer(config.BlobServer.Listener.Net, config.BlobServer.Listener.Addr),
 		},
 		nginx.WithTLS(config.TLS)))
+}
+
+// validateOriginMembership ensures the origin is in the hash ring and returns its resolved address.
+func validateOriginMembership(ring hashring.Ring, hostname string, port int, clusterDNS string) string {
+	addr := fmt.Sprintf("%s:%d", hostname, port)
+	if ring.Contains(addr) {
+		return addr
+	}
+
+	// For DNS-based clusters, the members will be IP addresses.
+	ip, err := netutil.GetLocalIP()
+	if err != nil {
+		log.With("error", err).Fatal("Failed to retrieve local IP")
+	}
+
+	addr = fmt.Sprintf("%s:%d", ip, port)
+	if err := ring.WaitForContains(addr); err != nil {
+		l := log.With(
+			"hostname", hostname, "port", port, "ip", ip,
+			"error", err, "ring_members", ring.Members().ToSlice(),
+		)
+		if host, _, err := net.SplitHostPort(clusterDNS); err == nil {
+			if ips, err := net.LookupHost(host); err == nil {
+				l = l.With("dns_ips", ips)
+			}
+		}
+		l.Fatal("Origin could not find itself in hash ring upon init")
+	}
+	return addr
 }
 
 // addTorrentDebugEndpoints mounts experimental debugging endpoints which are

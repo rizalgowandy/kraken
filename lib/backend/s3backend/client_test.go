@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -20,7 +20,8 @@ import (
 	"github.com/uber-go/tally"
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/lib/backend"
-	"github.com/uber/kraken/mocks/lib/backend/s3backend"
+	mocks3backend "github.com/uber/kraken/mocks/lib/backend/s3backend"
+	"github.com/uber/kraken/utils/closers"
 	"github.com/uber/kraken/utils/mockutil"
 	"github.com/uber/kraken/utils/randutil"
 	"github.com/uber/kraken/utils/rwutil"
@@ -30,6 +31,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 type clientMocks struct {
@@ -82,7 +84,7 @@ func TestClientFactory(t *testing.T) {
 	userAuth := UserAuthConfig{"test-user": auth}
 	masterAuth := backend.AuthConfig{_s3: userAuth}
 	f := factory{}
-	_, err := f.Create(config, masterAuth, tally.NoopScope)
+	_, err := f.Create(config, masterAuth, tally.NoopScope, zap.NewNop().Sugar())
 	require.NoError(err)
 }
 
@@ -93,6 +95,7 @@ func TestClientStat(t *testing.T) {
 	defer cleanup()
 
 	client := mocks.new()
+	defer closers.Close(client)
 
 	var length int64 = 100
 
@@ -113,6 +116,7 @@ func TestClientDownload(t *testing.T) {
 	defer cleanup()
 
 	client := mocks.new()
+	defer closers.Close(client)
 
 	data := randutil.Text(32)
 
@@ -136,6 +140,7 @@ func TestClientDownloadWithBuffer(t *testing.T) {
 	defer cleanup()
 
 	client := mocks.new()
+	defer closers.Close(client)
 
 	data := randutil.Text(32)
 
@@ -160,6 +165,7 @@ func TestClientUpload(t *testing.T) {
 	defer cleanup()
 
 	client := mocks.new()
+	defer closers.Close(client)
 
 	data := bytes.NewReader(randutil.Text(32))
 
@@ -182,12 +188,13 @@ func TestClientList(t *testing.T) {
 	defer cleanup()
 
 	client := mocks.new()
+	defer closers.Close(client)
 
 	mocks.s3.EXPECT().ListObjectsV2Pages(
 		&s3.ListObjectsV2Input{
-			Bucket:            aws.String("test-bucket"),
-			MaxKeys:           aws.Int64(250),
-			Prefix:            aws.String("root/test"),
+			Bucket:  aws.String("test-bucket"),
+			MaxKeys: aws.Int64(250),
+			Prefix:  aws.String("root/test"),
 		},
 		gomock.Any(),
 	).DoAndReturn(func(
@@ -225,12 +232,13 @@ func TestClientListPaginated(t *testing.T) {
 	defer cleanup()
 
 	client := mocks.new()
+	defer closers.Close(client)
 
 	mocks.s3.EXPECT().ListObjectsV2Pages(
 		&s3.ListObjectsV2Input{
-			Bucket:            aws.String("test-bucket"),
-			MaxKeys:           aws.Int64(2),
-			Prefix:            aws.String("root/test"),
+			Bucket:  aws.String("test-bucket"),
+			MaxKeys: aws.Int64(2),
+			Prefix:  aws.String("root/test"),
 		},
 		gomock.Any(),
 	).DoAndReturn(func(

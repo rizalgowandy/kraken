@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -56,11 +56,15 @@ func (s *Store) AddFailed(r persistedretry.Task) error {
 
 // MarkPending marks r as pending.
 func (s *Store) MarkPending(r persistedretry.Task) error {
+	t, ok := r.(*Task)
+	if !ok {
+		return fmt.Errorf("expected *Task, got %T", r)
+	}
 	res, err := s.db.NamedExec(`
 		UPDATE writeback_task
 		SET status = "pending"
 		WHERE namespace=:namespace AND name=:name
-	`, r.(*Task))
+	`, t)
 	if err != nil {
 		return err
 	}
@@ -74,7 +78,10 @@ func (s *Store) MarkPending(r persistedretry.Task) error {
 
 // MarkFailed marks r as failed.
 func (s *Store) MarkFailed(r persistedretry.Task) error {
-	t := r.(*Task)
+	t, ok := r.(*Task)
+	if !ok {
+		return fmt.Errorf("expected *Task, got %T", r)
+	}
 	res, err := s.db.NamedExec(`
 		UPDATE writeback_task
 		SET last_attempt = CURRENT_TIMESTAMP,
@@ -97,10 +104,14 @@ func (s *Store) MarkFailed(r persistedretry.Task) error {
 
 // Remove removes r.
 func (s *Store) Remove(r persistedretry.Task) error {
+	t, ok := r.(*Task)
+	if !ok {
+		return fmt.Errorf("expected *Task, got %T", r)
+	}
 	_, err := s.db.NamedExec(`
 		DELETE FROM writeback_task
 		WHERE namespace=:namespace AND name=:name
-	`, r.(*Task))
+	`, t)
 	return err
 }
 
@@ -111,7 +122,7 @@ func (s *Store) Find(query interface{}) ([]persistedretry.Task, error) {
 	switch q := query.(type) {
 	case *NameQuery:
 		err = s.db.Select(&tasks, `
-			SELECT namespace, name, created_at, last_attempt, failures, delay
+			SELECT namespace, name, created_at, last_attempt, failures, delay, trace_id, span_id, trace_flags
 			FROM writeback_task
 			WHERE name=?
 		`, q.name)
@@ -132,17 +143,27 @@ func (s *Store) addWithStatus(r persistedretry.Task, status string) error {
 			last_attempt,
 			failures,
 			delay,
-			status
+			status,
+			trace_id,
+			span_id,
+			trace_flags
 		) VALUES (
 			:namespace,
 			:name,
 			:last_attempt,
 			:failures,
 			:delay,
-			%q
+			%q,
+			:trace_id,
+			:span_id,
+			:trace_flags
 		)
 	`, status)
-	_, err := s.db.NamedExec(query, r.(*Task))
+	t, ok := r.(*Task)
+	if !ok {
+		return fmt.Errorf("expected *Task, got %T", r)
+	}
+	_, err := s.db.NamedExec(query, t)
 	if se, ok := err.(sqlite3.Error); ok {
 		if se.ExtendedCode == sqlite3.ErrConstraintPrimaryKey {
 			return persistedretry.ErrTaskExists
@@ -154,7 +175,7 @@ func (s *Store) addWithStatus(r persistedretry.Task, status string) error {
 func (s *Store) selectStatus(status string) ([]persistedretry.Task, error) {
 	var tasks []*Task
 	err := s.db.Select(&tasks, `
-		SELECT namespace, name, created_at, last_attempt, failures, delay
+		SELECT namespace, name, created_at, last_attempt, failures, delay, trace_id, span_id, trace_flags
 		FROM writeback_task
 		WHERE status=?
 	`, status)

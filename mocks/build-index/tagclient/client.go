@@ -5,38 +5,53 @@
 package mocktagclient
 
 import (
+	reflect "reflect"
+	time "time"
+
 	gomock "github.com/golang/mock/gomock"
 	tagclient "github.com/uber/kraken/build-index/tagclient"
 	tagmodels "github.com/uber/kraken/build-index/tagmodels"
 	core "github.com/uber/kraken/core"
-	reflect "reflect"
-	time "time"
 )
 
-// MockClient is a mock of Client interface
+// MockClient is a mock of Client interface.
 type MockClient struct {
 	ctrl     *gomock.Controller
 	recorder *MockClientMockRecorder
 }
 
-// MockClientMockRecorder is the mock recorder for MockClient
+// MockClientMockRecorder is the mock recorder for MockClient.
 type MockClientMockRecorder struct {
 	mock *MockClient
 }
 
-// NewMockClient creates a new mock instance
+// NewMockClient creates a new mock instance.
 func NewMockClient(ctrl *gomock.Controller) *MockClient {
 	mock := &MockClient{ctrl: ctrl}
 	mock.recorder = &MockClientMockRecorder{mock}
 	return mock
 }
 
-// EXPECT returns an object that allows the caller to indicate expected use
+// EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockClient) EXPECT() *MockClientMockRecorder {
 	return m.recorder
 }
 
-// DuplicatePut mocks base method
+// CheckReadiness mocks base method.
+func (m *MockClient) CheckReadiness() error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CheckReadiness")
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// CheckReadiness indicates an expected call of CheckReadiness.
+func (mr *MockClientMockRecorder) CheckReadiness() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CheckReadiness", reflect.TypeOf((*MockClient)(nil).CheckReadiness))
+}
+
+// DuplicatePut mocks base method.
 func (m *MockClient) DuplicatePut(arg0 string, arg1 core.Digest, arg2 time.Duration) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "DuplicatePut", arg0, arg1, arg2)
@@ -44,13 +59,13 @@ func (m *MockClient) DuplicatePut(arg0 string, arg1 core.Digest, arg2 time.Durat
 	return ret0
 }
 
-// DuplicatePut indicates an expected call of DuplicatePut
+// DuplicatePut indicates an expected call of DuplicatePut.
 func (mr *MockClientMockRecorder) DuplicatePut(arg0, arg1, arg2 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DuplicatePut", reflect.TypeOf((*MockClient)(nil).DuplicatePut), arg0, arg1, arg2)
 }
 
-// DuplicateReplicate mocks base method
+// DuplicateReplicate mocks base method.
 func (m *MockClient) DuplicateReplicate(arg0 string, arg1 core.Digest, arg2 core.DigestList, arg3 time.Duration) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "DuplicateReplicate", arg0, arg1, arg2, arg3)
@@ -58,13 +73,13 @@ func (m *MockClient) DuplicateReplicate(arg0 string, arg1 core.Digest, arg2 core
 	return ret0
 }
 
-// DuplicateReplicate indicates an expected call of DuplicateReplicate
+// DuplicateReplicate indicates an expected call of DuplicateReplicate.
 func (mr *MockClientMockRecorder) DuplicateReplicate(arg0, arg1, arg2, arg3 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DuplicateReplicate", reflect.TypeOf((*MockClient)(nil).DuplicateReplicate), arg0, arg1, arg2, arg3)
 }
 
-// Get mocks base method
+// Get mocks base method.
 func (m *MockClient) Get(arg0 string) (core.Digest, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Get", arg0)
@@ -73,13 +88,13 @@ func (m *MockClient) Get(arg0 string) (core.Digest, error) {
 	return ret0, ret1
 }
 
-// Get indicates an expected call of Get
+// Get indicates an expected call of Get.
 func (mr *MockClientMockRecorder) Get(arg0 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Get", reflect.TypeOf((*MockClient)(nil).Get), arg0)
 }
 
-// Has mocks base method
+// Has mocks base method.
 func (m *MockClient) Has(arg0 string) (bool, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Has", arg0)
@@ -88,13 +103,13 @@ func (m *MockClient) Has(arg0 string) (bool, error) {
 	return ret0, ret1
 }
 
-// Has indicates an expected call of Has
+// Has indicates an expected call of Has.
 func (mr *MockClientMockRecorder) Has(arg0 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Has", reflect.TypeOf((*MockClient)(nil).Has), arg0)
 }
 
-// List mocks base method
+// List mocks base method.
 func (m *MockClient) List(arg0 string) ([]string, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "List", arg0)
@@ -103,13 +118,13 @@ func (m *MockClient) List(arg0 string) ([]string, error) {
 	return ret0, ret1
 }
 
-// List indicates an expected call of List
+// List indicates an expected call of List.
 func (mr *MockClientMockRecorder) List(arg0 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "List", reflect.TypeOf((*MockClient)(nil).List), arg0)
 }
 
-// ListRepository mocks base method
+// ListRepository mocks base method.
 func (m *MockClient) ListRepository(arg0 string) ([]string, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "ListRepository", arg0)
@@ -118,13 +133,13 @@ func (m *MockClient) ListRepository(arg0 string) ([]string, error) {
 	return ret0, ret1
 }
 
-// ListRepository indicates an expected call of ListRepository
+// ListRepository indicates an expected call of ListRepository.
 func (mr *MockClientMockRecorder) ListRepository(arg0 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListRepository", reflect.TypeOf((*MockClient)(nil).ListRepository), arg0)
 }
 
-// ListRepositoryWithPagination mocks base method
+// ListRepositoryWithPagination mocks base method.
 func (m *MockClient) ListRepositoryWithPagination(arg0 string, arg1 tagclient.ListFilter) (tagmodels.ListResponse, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "ListRepositoryWithPagination", arg0, arg1)
@@ -133,13 +148,13 @@ func (m *MockClient) ListRepositoryWithPagination(arg0 string, arg1 tagclient.Li
 	return ret0, ret1
 }
 
-// ListRepositoryWithPagination indicates an expected call of ListRepositoryWithPagination
+// ListRepositoryWithPagination indicates an expected call of ListRepositoryWithPagination.
 func (mr *MockClientMockRecorder) ListRepositoryWithPagination(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListRepositoryWithPagination", reflect.TypeOf((*MockClient)(nil).ListRepositoryWithPagination), arg0, arg1)
 }
 
-// ListWithPagination mocks base method
+// ListWithPagination mocks base method.
 func (m *MockClient) ListWithPagination(arg0 string, arg1 tagclient.ListFilter) (tagmodels.ListResponse, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "ListWithPagination", arg0, arg1)
@@ -148,13 +163,13 @@ func (m *MockClient) ListWithPagination(arg0 string, arg1 tagclient.ListFilter) 
 	return ret0, ret1
 }
 
-// ListWithPagination indicates an expected call of ListWithPagination
+// ListWithPagination indicates an expected call of ListWithPagination.
 func (mr *MockClientMockRecorder) ListWithPagination(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListWithPagination", reflect.TypeOf((*MockClient)(nil).ListWithPagination), arg0, arg1)
 }
 
-// Origin mocks base method
+// Origin mocks base method.
 func (m *MockClient) Origin() (string, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Origin")
@@ -163,13 +178,13 @@ func (m *MockClient) Origin() (string, error) {
 	return ret0, ret1
 }
 
-// Origin indicates an expected call of Origin
+// Origin indicates an expected call of Origin.
 func (mr *MockClientMockRecorder) Origin() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Origin", reflect.TypeOf((*MockClient)(nil).Origin))
 }
 
-// Put mocks base method
+// Put mocks base method.
 func (m *MockClient) Put(arg0 string, arg1 core.Digest) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Put", arg0, arg1)
@@ -177,13 +192,13 @@ func (m *MockClient) Put(arg0 string, arg1 core.Digest) error {
 	return ret0
 }
 
-// Put indicates an expected call of Put
+// Put indicates an expected call of Put.
 func (mr *MockClientMockRecorder) Put(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Put", reflect.TypeOf((*MockClient)(nil).Put), arg0, arg1)
 }
 
-// PutAndReplicate mocks base method
+// PutAndReplicate mocks base method.
 func (m *MockClient) PutAndReplicate(arg0 string, arg1 core.Digest) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "PutAndReplicate", arg0, arg1)
@@ -191,13 +206,13 @@ func (m *MockClient) PutAndReplicate(arg0 string, arg1 core.Digest) error {
 	return ret0
 }
 
-// PutAndReplicate indicates an expected call of PutAndReplicate
+// PutAndReplicate indicates an expected call of PutAndReplicate.
 func (mr *MockClientMockRecorder) PutAndReplicate(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PutAndReplicate", reflect.TypeOf((*MockClient)(nil).PutAndReplicate), arg0, arg1)
 }
 
-// Replicate mocks base method
+// Replicate mocks base method.
 func (m *MockClient) Replicate(arg0 string) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Replicate", arg0)
@@ -205,7 +220,7 @@ func (m *MockClient) Replicate(arg0 string) error {
 	return ret0
 }
 
-// Replicate indicates an expected call of Replicate
+// Replicate indicates an expected call of Replicate.
 func (mr *MockClientMockRecorder) Replicate(arg0 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Replicate", reflect.TypeOf((*MockClient)(nil).Replicate), arg0)

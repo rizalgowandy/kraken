@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,9 +14,9 @@
 package tagstore_test
 
 import (
+	"context"
 	"fmt"
 	"io"
-	"sync"
 	"testing"
 
 	. "github.com/uber/kraken/build-index/tagstore"
@@ -25,14 +25,13 @@ import (
 	"github.com/uber/kraken/lib/backend/backenderrors"
 	"github.com/uber/kraken/lib/persistedretry/writeback"
 	"github.com/uber/kraken/lib/store"
-	"github.com/uber/kraken/mocks/lib/backend"
-	"github.com/uber/kraken/mocks/lib/persistedretry"
+	mockbackend "github.com/uber/kraken/mocks/lib/backend"
+	mockpersistedretry "github.com/uber/kraken/mocks/lib/persistedretry"
 	"github.com/uber/kraken/utils/mockutil"
 	"github.com/uber/kraken/utils/testutil"
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
-	"github.com/uber-go/tally"
 )
 
 const _testNamespace = ".*"
@@ -57,7 +56,7 @@ func newStoreMocks(t *testing.T) (*storeMocks, func()) {
 
 	backends := backend.ManagerFixture()
 	backendClient := mockbackend.NewMockClient(ctrl)
-	require.NoError(t, backends.Register(_testNamespace, backendClient))
+	require.NoError(t, backends.Register(_testNamespace, backendClient, false))
 
 	writeBackManager := mockpersistedretry.NewMockManager(ctrl)
 
@@ -65,20 +64,7 @@ func newStoreMocks(t *testing.T) (*storeMocks, func()) {
 }
 
 func (m *storeMocks) new(config Config) Store {
-	return New(config, tally.NoopScope, m.ss, m.backends, m.writeBackManager)
-}
-
-func checkConcurrentGets(t *testing.T, store Store, tag string, expected core.Digest) {
-	t.Helper()
-
-	var wg sync.WaitGroup
-	for i := 0; i < 100; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-		}()
-	}
-	wg.Wait()
+	return New(config, m.ss, m.backends, m.writeBackManager)
 }
 
 func TestPutAndGetFromDisk(t *testing.T) {
@@ -95,7 +81,7 @@ func TestPutAndGetFromDisk(t *testing.T) {
 	mocks.writeBackManager.EXPECT().Add(
 		writeback.MatchTask(writeback.NewTask(tag, tag, 0))).Return(nil)
 
-	require.NoError(store.Put(tag, digest, 0))
+	require.NoError(store.Put(context.Background(), tag, digest, 0))
 
 	result, err := store.Get(tag)
 	require.NoError(err)
@@ -116,7 +102,7 @@ func TestPutAndGetFromDiskWriteThrough(t *testing.T) {
 	mocks.writeBackManager.EXPECT().SyncExec(
 		writeback.MatchTask(writeback.NewTask(tag, tag, 0))).Return(nil)
 
-	require.NoError(store.Put(tag, digest, 0))
+	require.NoError(store.Put(context.Background(), tag, digest, 0))
 
 	result, err := store.Get(tag)
 	require.NoError(err)
@@ -157,7 +143,7 @@ func TestGetFromBackendUnkownError(t *testing.T) {
 	mocks.backendClient.EXPECT().Download(tag, tag, w).Return(fmt.Errorf("test error"))
 
 	_, err := store.Get(tag)
-	require.Error(err)
+	require.Equal(ErrTagNotFound, err)
 }
 
 func TestGetFromBackendInvalidValue(t *testing.T) {
@@ -175,8 +161,8 @@ func TestGetFromBackendInvalidValue(t *testing.T) {
 		tag, tag,
 		mockutil.MatchWriter([]byte(digest.String()))).DoAndReturn(
 		func(namespace, name string, dst io.Writer) error {
-			dst.Write([]byte("foo"))
-			return nil
+			_, err := dst.Write([]byte("foo"))
+			return err
 		})
 
 	_, err := store.Get(tag)

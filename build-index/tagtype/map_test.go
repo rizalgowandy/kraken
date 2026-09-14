@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,7 +17,7 @@ import (
 	"testing"
 
 	"github.com/uber/kraken/core"
-	"github.com/uber/kraken/mocks/origin/blobclient"
+	mockblobclient "github.com/uber/kraken/mocks/origin/blobclient"
 	"github.com/uber/kraken/utils/dockerutil"
 	"github.com/uber/kraken/utils/mockutil"
 
@@ -47,7 +47,7 @@ func TestMapResolveDocker(t *testing.T) {
 	layers := core.DigestListFixture(3)
 	manifest, b := dockerutil.ManifestFixture(layers[0], layers[1], layers[2])
 
-	originClient.EXPECT().DownloadBlob(tag, manifest, mockutil.MatchWriter(b)).Return(nil)
+	originClient.EXPECT().DownloadBlob(gomock.Any(), tag, manifest, mockutil.MatchWriter(b)).Return(nil)
 
 	deps, err := m.Resolve(tag, manifest)
 	require.NoError(err)

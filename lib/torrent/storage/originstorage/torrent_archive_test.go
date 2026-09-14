@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,18 +18,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang/mock/gomock"
+	"github.com/stretchr/testify/require"
+	"github.com/uber-go/tally"
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/lib/backend"
 	"github.com/uber/kraken/lib/blobrefresh"
 	"github.com/uber/kraken/lib/metainfogen"
 	"github.com/uber/kraken/lib/store"
-	"github.com/uber/kraken/mocks/lib/backend"
+	mockbackend "github.com/uber/kraken/mocks/lib/backend"
 	"github.com/uber/kraken/utils/mockutil"
 	"github.com/uber/kraken/utils/testutil"
-
-	"github.com/golang/mock/gomock"
-	"github.com/stretchr/testify/require"
-	"github.com/uber-go/tally"
 )
 
 const pieceLength = 4
@@ -52,7 +51,7 @@ func newArchiveMocks(t *testing.T, namespace string) (*archiveMocks, func()) {
 
 	backendClient := mockbackend.NewMockClient(ctrl)
 	backends := backend.ManagerFixture()
-	backends.Register(namespace, backendClient)
+	require.NoError(t, backends.Register(namespace, backendClient, false))
 
 	blobRefresher := blobrefresh.New(
 		blobrefresh.Config{}, tally.NoopScope, cas, backends, metainfogen.Fixture(cas, pieceLength))

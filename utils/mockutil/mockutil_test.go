@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,7 +15,7 @@ package mockutil
 
 import (
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"testing"
 
@@ -36,9 +36,11 @@ func TestMatchReader(t *testing.T) {
 		t.Run(fmt.Sprintf("%q==%q", test.expected, test.actual), func(t *testing.T) {
 			require := require.New(t)
 
-			f, err := ioutil.TempFile("", "")
+			f, err := os.CreateTemp("", "")
 			require.NoError(err)
-			defer os.Remove(f.Name())
+			t.Cleanup(func() {
+				require.NoError(os.Remove(f.Name()))
+			})
 
 			_, err = f.Write([]byte(test.actual))
 			require.NoError(err)
@@ -64,9 +66,11 @@ func TestMatchReaderTypeCheck(t *testing.T) {
 func TestMatchWriter(t *testing.T) {
 	require := require.New(t)
 
-	f, err := ioutil.TempFile("", "")
+	f, err := os.CreateTemp("", "")
 	require.NoError(err)
-	defer os.Remove(f.Name())
+	t.Cleanup(func() {
+		require.NoError(os.Remove(f.Name()))
+	})
 
 	b := []byte("some text")
 
@@ -79,7 +83,8 @@ func TestMatchWriter(t *testing.T) {
 	require.NoError(err)
 
 	// WriterMatcher should write to the file.
-	result, err := ioutil.ReadAll(f)
+	result, err := io.ReadAll(f)
+	require.NoError(err)
 	require.Equal(string(b), string(result))
 }
 
@@ -93,9 +98,11 @@ func TestMatchWriterTypeCheck(t *testing.T) {
 func TestMatchWriterAt(t *testing.T) {
 	require := require.New(t)
 
-	f, err := ioutil.TempFile("", "")
+	f, err := os.CreateTemp("", "")
 	require.NoError(err)
-	defer os.Remove(f.Name())
+	t.Cleanup(func() {
+		require.NoError(os.Remove(f.Name()))
+	})
 
 	b := []byte("some text")
 
@@ -108,7 +115,8 @@ func TestMatchWriterAt(t *testing.T) {
 	require.NoError(err)
 
 	// WriterAtMatcher should write to the file.
-	result, err := ioutil.ReadAll(f)
+	result, err := io.ReadAll(f)
+	require.NoError(err)
 	require.Equal(string(b), string(result))
 }
 

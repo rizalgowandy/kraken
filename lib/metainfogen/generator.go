@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,7 +18,6 @@ import (
 
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/lib/store"
-	"github.com/uber/kraken/lib/store/metadata"
 )
 
 // Generator wraps static piece length configuration in order to determinstically
@@ -43,17 +42,11 @@ func (g *Generator) Generate(d core.Digest) error {
 	if err != nil {
 		return fmt.Errorf("cache stat: %s", err)
 	}
-	f, err := g.cas.GetCacheFileReader(d.Hex())
-	if err != nil {
-		return fmt.Errorf("get cache file: %s", err)
-	}
 	pieceLength := g.pieceLengthConfig.get(info.Size())
-	mi, err := core.NewMetaInfo(d, f, pieceLength)
-	if err != nil {
-		return fmt.Errorf("create metainfo: %s", err)
-	}
-	if _, err := g.cas.SetCacheFileMetadata(d.Hex(), metadata.NewTorrentMeta(mi)); err != nil {
-		return fmt.Errorf("set metainfo: %s", err)
-	}
-	return nil
+	return g.cas.GenerateMetadataFromFile(d.Hex(), pieceLength)
+}
+
+// Get the piece length for the blob
+func (g *Generator) GetPieceLength(size int64) int64 {
+	return g.pieceLengthConfig.get(size)
 }

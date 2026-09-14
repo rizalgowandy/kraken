@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,6 +14,7 @@
 package blobclient
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -25,10 +26,16 @@ import (
 	"github.com/cenkalti/backoff"
 
 	"github.com/uber/kraken/core"
+	"github.com/uber/kraken/lib/backend"
 	"github.com/uber/kraken/lib/hostlist"
 	"github.com/uber/kraken/utils/errutil"
 	"github.com/uber/kraken/utils/httputil"
 	"github.com/uber/kraken/utils/log"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Locations queries cluster for the locations of d.
@@ -49,7 +56,7 @@ func Locations(p Provider, cluster hostlist.List, d core.Digest) (locs []string,
 
 // ClientResolver resolves digests into Clients of origins.
 type ClientResolver interface {
-	// Resolve must return an ordered, stable list of Clients for origins owning d.
+	// Resolve must return an ordered, stable, non-empty list of Clients for origins owning d.
 	Resolve(d core.Digest) ([]Client, error)
 }
 
@@ -75,11 +82,15 @@ func (r *clientResolver) Resolve(d core.Digest) ([]Client, error) {
 	return clients, nil
 }
 
+var _ ClusterClient = &clusterClient{}
+
 // ClusterClient defines a top-level origin cluster client which handles blob
 // location resolution and retries.
 type ClusterClient interface {
-	UploadBlob(namespace string, d core.Digest, blob io.Reader) error
-	DownloadBlob(namespace string, d core.Digest, dst io.Writer) error
+	CheckReadiness() error
+	UploadBlob(ctx context.Context, namespace string, d core.Digest, blob io.ReadSeeker, size uint64) error
+	DownloadBlob(ctx context.Context, namespace string, d core.Digest, dst io.Writer) error
+	PrefetchBlob(namespace string, d core.Digest) error
 	GetMetaInfo(namespace string, d core.Digest) (*core.MetaInfo, error)
 	Stat(namespace string, d core.Digest) (*core.BlobInfo, error)
 	OverwriteMetaInfo(d core.Digest, pieceLength int64) error
@@ -108,25 +119,75 @@ func (c *clusterClient) defaultPollBackOff() backoff.BackOff {
 	}
 }
 
-// UploadBlob uploads blob to origin cluster. See Client.UploadBlob for more details.
-func (c *clusterClient) UploadBlob(namespace string, d core.Digest, blob io.Reader) (err error) {
-	clients, err := c.resolver.Resolve(d)
+func (c *clusterClient) CheckReadiness() error {
+	clients, err := c.resolver.Resolve(backend.ReadinessCheckDigest)
 	if err != nil {
 		return fmt.Errorf("resolve clients: %s", err)
 	}
+	randIdx := rand.Intn(len(clients))
+	return clients[randIdx].CheckReadiness()
+}
+
+// UploadBlob uploads blob to origin cluster. See Client.UploadBlob for more details.
+func (c *clusterClient) UploadBlob(ctx context.Context, namespace string, d core.Digest, blob io.ReadSeeker, size uint64) (err error) {
+	ctx, span := otel.Tracer("kraken-origin-cluster-client").Start(ctx, "cluster.upload_blob",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("component", "origin-cluster-client"),
+			attribute.String("operation", "upload_blob"),
+			attribute.String("namespace", namespace),
+			attribute.String("blob.digest", d.Hex()),
+		),
+	)
+	defer span.End()
+
+	clients, err := c.resolver.Resolve(d)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to resolve clients")
+		return fmt.Errorf("resolve clients: %s", err)
+	}
+
+	span.SetAttributes(attribute.Int("cluster.origin_count", len(clients)))
+	log.WithTraceContext(ctx).With("namespace", namespace, "digest", d.Hex()).Debug("Starting blob upload to origin cluster")
 
 	// We prefer the origin with highest hashing score so the first origin will handle
 	// replication to origins with lower score. This is because we want to reduce upload
 	// conflicts between local replicas.
-	for _, client := range clients {
-		err = client.UploadBlob(namespace, d, blob)
+	for i, client := range clients {
+		originAddr := client.Addr()
+		span.SetAttributes(attribute.Int("cluster.attempt", i))
+
+		log.WithTraceContext(ctx).With("namespace", namespace, "digest", d.Hex(), "origin", originAddr, "attempt", i).Debug("Attempting blob upload to origin")
+		err = client.UploadBlob(ctx, namespace, d, blob, size)
+		if err == nil {
+			log.WithTraceContext(ctx).With("namespace", namespace, "digest", d.Hex(), "origin", originAddr).Debug("Blob upload succeeded")
+			span.SetAttributes(attribute.String("cluster.successful_origin", originAddr))
+			span.SetStatus(codes.Ok, "upload succeeded")
+			return nil
+		}
+		log.WithTraceContext(ctx).With("namespace", namespace, "digest", d.Hex(), "origin", originAddr, "error", err).Error("Blob upload failed")
+
+		// Non-retryable error - don't try other origins
+		if !httputil.IsNetworkError(err) && !httputil.IsRetryable(err) {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "non-retryable error")
+			return err
+		}
+
 		// Allow retry on another origin if the current upstream is temporarily
 		// unavailable or under high load.
-		if httputil.IsNetworkError(err) || httputil.IsRetryable(err) {
-			continue
+		log.WithTraceContext(ctx).With("namespace", namespace, "digest", d.Hex(), "origin", originAddr, "attempt", i).Debug("Rewinding blob reader for retry")
+		if _, seekErr := blob.Seek(0, io.SeekStart); seekErr != nil {
+			log.WithTraceContext(ctx).With("namespace", namespace, "digest", d.Hex(), "error", seekErr).Error("Failed to rewind blob reader for retry")
+			span.RecordError(seekErr)
+			span.SetStatus(codes.Error, "failed to rewind blob")
+			return fmt.Errorf("rewind blob for retry after %d attempts: %w", i, seekErr)
 		}
-		break
 	}
+
+	span.RecordError(err)
+	span.SetStatus(codes.Error, "all origins failed")
 	return err
 }
 
@@ -184,14 +245,60 @@ func (c *clusterClient) OverwriteMetaInfo(d core.Digest, pieceLength int64) erro
 }
 
 // DownloadBlob pulls a blob from the origin cluster.
-func (c *clusterClient) DownloadBlob(namespace string, d core.Digest, dst io.Writer) error {
+func (c *clusterClient) DownloadBlob(ctx context.Context, namespace string, d core.Digest, dst io.Writer) error {
+	ctx, span := otel.Tracer("kraken-origin-cluster").Start(ctx, "cluster.download_blob",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("component", "origin-cluster-client"),
+			attribute.String("operation", "download_blob"),
+			attribute.String("namespace", namespace),
+			attribute.String("blob.digest", d.Hex()),
+		),
+	)
+	defer span.End()
+
+	log.WithTraceContext(ctx).With("namespace", namespace, "digest", d.Hex()).Debug("Starting blob download from origin cluster")
+
 	err := Poll(c.resolver, c.defaultPollBackOff(), d, func(client Client) error {
-		return client.DownloadBlob(namespace, d, dst)
+		return client.DownloadBlob(ctx, namespace, d, dst)
 	})
 	if httputil.IsNotFound(err) {
+		span.SetStatus(codes.Error, "blob not found")
 		err = ErrBlobNotFound
+	} else if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "download failed")
+		log.WithTraceContext(ctx).With("namespace", namespace, "digest", d.Hex(), "error", err).Error("Blob download failed")
+	} else {
+		span.SetStatus(codes.Ok, "download completed")
+		log.WithTraceContext(ctx).With("namespace", namespace, "digest", d.Hex()).Debug("Blob download succeeded")
 	}
 	return err
+}
+
+// PrefetchBlob preheats a blob in the origin cluster for downloading.
+// Check [Client].PrefetchBlob's comment for more info.
+func (c *clusterClient) PrefetchBlob(namespace string, d core.Digest) error {
+	clients, err := c.resolver.Resolve(d)
+	if err != nil {
+		return fmt.Errorf("resolve clients: %w", err)
+	}
+
+	var errs []error
+	for _, client := range clients {
+		err = client.PrefetchBlob(namespace, d)
+		if err == nil {
+			return nil
+		}
+
+		if httputil.IsNotFound(err) {
+			// no need to iterate over other origins
+			return ErrBlobNotFound
+		}
+		errs = append(errs, err)
+	}
+
+	return fmt.Errorf("all origins unavailable: %w", errors.Join(errs...))
 }
 
 // Owners returns the origin peers which own d.
@@ -255,8 +362,8 @@ func shuffle(cs []Client) {
 // Poll wraps requests for endpoints which require polling, due to a blob
 // being asynchronously fetched from remote storage in the origin cluster.
 func Poll(
-	r ClientResolver, b backoff.BackOff, d core.Digest, makeRequest func(Client) error) error {
-
+	r ClientResolver, b backoff.BackOff, d core.Digest, makeRequest func(Client) error,
+) error {
 	// By looping over clients in order, we will always prefer the same origin
 	// for making requests to loosely guarantee that only one origin needs to
 	// fetch the file from remote backend.

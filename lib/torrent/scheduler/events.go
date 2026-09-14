@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,12 +17,12 @@ import (
 	"time"
 
 	"github.com/uber/kraken/core"
+	"github.com/uber/kraken/lib/observability"
 	"github.com/uber/kraken/lib/torrent/networkevent"
 	"github.com/uber/kraken/lib/torrent/scheduler/conn"
 	"github.com/uber/kraken/lib/torrent/scheduler/connstate"
 	"github.com/uber/kraken/lib/torrent/scheduler/dispatch"
 	"github.com/uber/kraken/lib/torrent/storage"
-	"github.com/uber/kraken/utils/memsize"
 	"github.com/uber/kraken/utils/timeutil"
 
 	"github.com/willf/bitset"
@@ -189,7 +189,7 @@ func (e incomingConnEvent) apply(s *state) {
 		e.c.Close()
 		return
 	}
-	s.log("conn", e.c).Info("Added incoming conn")
+	s.log("conn", e.c).Debug("Added incoming conn")
 }
 
 // failedOutgoingHandshakeEvent occurs when a pending incoming connection fails
@@ -321,6 +321,15 @@ type newTorrentEvent struct {
 // apply begins seeding / leeching a new torrent.
 func (e newTorrentEvent) apply(s *state) {
 	ctrl, ok := s.torrentControls[e.torrent.InfoHash()]
+	if ok && ctrl.dispatcher.Complete() && !e.torrent.Complete() {
+		// The scheduler considers the torrent complete, while it is
+		// actually not on disk. This happens when the disk cache
+		// asynchronously evicts the torrent, leaving the scheduler
+		// incorrectly thinking the torrent is still on disk.
+		// We fix this by removing the mem entry for the torrent.
+		s.removeTorrent(e.torrent.InfoHash(), nil)
+		ok = false
+	}
 	if !ok {
 		var err error
 		ctrl, err = s.addTorrent(e.namespace, e.torrent, true)
@@ -360,14 +369,8 @@ func (e dispatcherCompleteEvent) apply(s *state) {
 		errc <- nil
 	}
 	if ctrl.localRequest {
-		// Normalize the download time for all torrent sizes to a per MB value.
-		// Skip torrents that are less than a MB in size because we can't measure
-		// at that granularity.
 		downloadTime := s.sched.clock.Now().Sub(ctrl.dispatcher.CreatedAt())
-		lengthMB := ctrl.dispatcher.Length() / int64(memsize.MB)
-		if lengthMB > 0 {
-			s.sched.stats.Timer("download_time_per_mb").Record(downloadTime / time.Duration(lengthMB))
-		}
+		observability.EmitDownloadPerformance(s.sched.stats, observability.TORRENT_LEECH, ctrl.dispatcher.Length(), downloadTime)
 	}
 
 	s.log("hash", infoHash).Info("Torrent complete")
@@ -416,16 +419,14 @@ func (e preemptionTickEvent) apply(s *state) {
 	}
 
 	for h, ctrl := range s.torrentControls {
-		idleSeeder :=
-			ctrl.dispatcher.Complete() &&
-				s.sched.clock.Now().Sub(ctrl.dispatcher.LastReadTime()) >= s.sched.config.SeederTTI
+		idleSeeder := ctrl.dispatcher.Complete() &&
+			s.sched.clock.Now().Sub(ctrl.dispatcher.LastReadTime()) >= s.sched.config.SeederTTI
 		if idleSeeder {
 			s.sched.torrentlog.SeedTimeout(ctrl.dispatcher.Digest(), h)
 		}
 
-		idleLeecher :=
-			!ctrl.dispatcher.Complete() &&
-				s.sched.clock.Now().Sub(ctrl.dispatcher.LastWriteTime()) >= s.sched.config.LeecherTTI
+		idleLeecher := !ctrl.dispatcher.Complete() &&
+			s.sched.clock.Now().Sub(ctrl.dispatcher.LastWriteTime()) >= s.sched.config.LeecherTTI
 		if idleLeecher {
 			s.sched.torrentlog.LeechTimeout(ctrl.dispatcher.Digest(), h)
 		}

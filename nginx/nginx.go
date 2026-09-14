@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,7 +17,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path"
@@ -25,6 +24,7 @@ import (
 	"text/template"
 
 	"github.com/uber/kraken/nginx/config"
+	"github.com/uber/kraken/utils/closers"
 	"github.com/uber/kraken/utils/httputil"
 	"github.com/uber/kraken/utils/log"
 )
@@ -56,6 +56,13 @@ type Config struct {
 	AccessLogPath string `yaml:"access_log_path"`
 	ErrorLogPath  string `yaml:"error_log_path"`
 
+	// ProxyTimeout defines the proxy_read_timeout for nginx (e.g. "15m", "3m", "60s")
+	ProxyTimeout string `yaml:"proxy_timeout"`
+
+	// ListenBacklog sets the backlog parameter on nginx listen directives.
+	// Zero means use nginx's default.
+	ListenBacklog int `yaml:"listen_backlog"`
+
 	tls httputil.TLSConfig
 }
 
@@ -81,6 +88,9 @@ func (c *Config) applyDefaults() error {
 		}
 		c.ErrorLogPath = filepath.Join(c.LogDir, "nginx-error.log")
 	}
+	if c.ListenBacklog < 0 {
+		return errors.New("listen_backlog must be non-negative")
+	}
 	return nil
 }
 
@@ -99,7 +109,7 @@ func (c *Config) inject(params map[string]interface{}) error {
 // GetTemplate returns the template content.
 func (c *Config) getTemplate() (string, error) {
 	if c.TemplatePath != "" {
-		b, err := ioutil.ReadFile(c.TemplatePath)
+		b, err := os.ReadFile(c.TemplatePath)
 		if err != nil {
 			return "", fmt.Errorf("read template: %s", err)
 		}
@@ -118,8 +128,18 @@ func (c *Config) Build(params map[string]interface{}) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get template: %s", err)
 	}
+	// Add config-level defaults to params for site template.
 	if _, ok := params["client_verification"]; !ok {
 		params["client_verification"] = config.DefaultClientVerification
+	}
+	if _, ok := params["proxy_read_timeout"]; !ok {
+		params["proxy_read_timeout"] = c.ProxyTimeout
+	}
+	if _, ok := params["listen_backlog"]; !ok {
+		params["listen_backlog"] = c.ListenBacklog
+	}
+	if _, ok := params["ssl_enabled"]; !ok {
+		params["ssl_enabled"] = !c.tls.Server.Disabled
 	}
 	site, err := populateTemplate(tmpl, params)
 	if err != nil {
@@ -169,7 +189,7 @@ func Run(config Config, params map[string]interface{}, opts ...Option) error {
 	}
 
 	// Create root directory for generated files for nginx.
-	if err := os.MkdirAll(_genDir, 0775); err != nil {
+	if err := os.MkdirAll(_genDir, 0o775); err != nil {
 		return err
 	}
 
@@ -194,10 +214,10 @@ func Run(config Config, params map[string]interface{}, opts ...Option) error {
 		if err := config.tls.WriteCABundle(cabundle); err != nil {
 			return fmt.Errorf("write cabundle: %s", err)
 		}
-		cabundle.Close()
+		closers.Close(cabundle)
 	}
 
-	if err := os.MkdirAll(config.CacheDir, 0775); err != nil {
+	if err := os.MkdirAll(config.CacheDir, 0o775); err != nil {
 		return err
 	}
 
@@ -211,11 +231,11 @@ func Run(config Config, params map[string]interface{}, opts ...Option) error {
 	}
 
 	conf := filepath.Join(_genDir, config.Name)
-	if err := ioutil.WriteFile(conf, src, 0755); err != nil {
+	if err := os.WriteFile(conf, src, 0o755); err != nil {
 		return fmt.Errorf("write src: %s", err)
 	}
 
-	stdout, err := os.OpenFile(config.StdoutLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	stdout, err := os.OpenFile(config.StdoutLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return fmt.Errorf("open stdout log: %s", err)
 	}
@@ -231,7 +251,10 @@ func Run(config Config, params map[string]interface{}, opts ...Option) error {
 }
 
 func populateTemplate(tmpl string, args map[string]interface{}) ([]byte, error) {
-	t, err := template.New("nginx").Parse(tmpl)
+	funcMap := template.FuncMap{
+		"healthEndpoint": generateHealthEndpoint,
+	}
+	t, err := template.New("nginx").Funcs(funcMap).Parse(tmpl)
 	if err != nil {
 		return nil, fmt.Errorf("parse: %s", err)
 	}
@@ -240,6 +263,16 @@ func populateTemplate(tmpl string, args map[string]interface{}) ([]byte, error) 
 		return nil, fmt.Errorf("exec: %s", err)
 	}
 	return out.Bytes(), nil
+}
+
+// generateHealthEndpoint creates a standardized health endpoint location block.
+// Usage in templates: {{healthEndpoint .server}} or {{healthEndpoint "agent-server"}}
+func generateHealthEndpoint(upstream string) string {
+	return fmt.Sprintf(`  # Health and readiness checks without logging to reduce noise
+  location ~ ^/(health|readiness)$ {
+    access_log off;  # Disable logging for health checks
+    proxy_pass http://%s;
+  }`, upstream)
 }
 
 // GetServer returns a string for an nginx server directive value.

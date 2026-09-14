@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -24,11 +24,14 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi"
 	"github.com/stretchr/testify/require"
+	"github.com/uber-go/tally"
 
 	"github.com/uber/kraken/utils/randutil"
 	"github.com/uber/kraken/utils/testutil"
@@ -66,7 +69,10 @@ func genKeyPair(t *testing.T, caPEM, caKeyPEM, caSercret []byte) (certPEM, keyPE
 		require.NoError(err)
 		block, _ = pem.Decode(caKeyPEM)
 		require.NotNil(block)
-		decoded, err := x509.DecryptPEMBlock(block, caSercret)
+		// x509.DecryptPEMBlock is deprecated, but it replacement requires additional coding and changes in the encryption algorithm.
+		// given all the tls tests are skipped, @egorikas didn't feel confident enough to fix the code.
+		// so, the lint warning is ignored for now, potentially the tests will be recovered, then the code should be fixed.
+		decoded, err := x509.DecryptPEMBlock(block, caSercret) //nolint:staticcheck
 		require.NoError(err)
 		caKey, err := x509.ParsePKCS1PrivateKey(decoded)
 		require.NoError(err)
@@ -82,7 +88,10 @@ func genKeyPair(t *testing.T, caPEM, caKeyPEM, caSercret []byte) (certPEM, keyPE
 	// Encode cert and key to PEM format.
 	cert := &bytes.Buffer{}
 	require.NoError(pem.Encode(cert, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}))
-	encrypted, err := x509.EncryptPEMBlock(rand.Reader, "RSA PRIVATE KEY", x509.MarshalPKCS1PrivateKey(priv), secret, x509.PEMCipherAES256)
+	// x509.EncryptPEMBlock is deprecated, but it replacement requires additional coding and changes in the encryption algorithm.
+	// given all the tls tests are skipped, @egorikas didn't feel confident enough to fix the code.
+	// so, the lint warning is ignored for now, potentially the tests will be recovered, then the code should be fixed.
+	encrypted, err := x509.EncryptPEMBlock(rand.Reader, "RSA PRIVATE KEY", x509.MarshalPKCS1PrivateKey(priv), secret, x509.PEMCipherAES256) //nolint:staticcheck
 	require.NoError(err)
 	return cert.Bytes(), pem.EncodeToMemory(encrypted), secret
 }
@@ -161,10 +170,13 @@ func startTLSServer(t *testing.T, clientCAs []Secret) (addr string, serverCA Sec
 	r := chi.NewRouter()
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, "OK")
+		_, err := fmt.Fprintln(w, "OK")
+		require.NoError(err)
 	})
-	go http.Serve(l, r)
-	cleanup.Add(func() { l.Close() })
+	go http.Serve(l, r) //nolint:errcheck
+	cleanup.Add(func() {
+		require.NoError(l.Close())
+	})
 	return l.Addr().String(), Secret{certPath}, cleanup.Run
 }
 
@@ -231,7 +243,8 @@ func TestTLSClientFallback(t *testing.T) {
 	r := chi.NewRouter()
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, "OK")
+		_, err := fmt.Fprintln(w, "OK")
+		require.NoError(err)
 	})
 	addr, stop := testutil.StartServer(r)
 	defer stop()
@@ -252,4 +265,56 @@ func TestTLSClientFallbackError(t *testing.T) {
 
 	_, err = Get("https://some-non-existent-addr/", SendTLS(tls))
 	require.Error(err)
+}
+
+func TestStartCertExpiryMonitor(t *testing.T) {
+	t.Run("expiration date emitted correctly", func(t *testing.T) {
+		require := require.New(t)
+
+		dir := t.TempDir()
+		writeFile := func(name string, data []byte) string {
+			path := filepath.Join(dir, name)
+			require.NoError(os.WriteFile(path, data, 0o600))
+			return path
+		}
+
+		serverCertPEM, serverKeyPEM, serverSecret := genKeyPair(t, nil, nil, nil)
+		config := &TLSConfig{}
+		config.Server.Cert.Path = writeFile("server.crt", serverCertPEM)
+		config.Server.Key.Path = writeFile("server.key", serverKeyPEM)
+		config.Server.Passphrase.Path = writeFile("server.passphrase", serverSecret)
+
+		clientCertPEM, clientKeyPEM, clientSecret := genKeyPair(t, nil, nil, nil)
+		config.Client.Cert.Path = writeFile("client.crt", clientCertPEM)
+		config.Client.Key.Path = writeFile("client.key", clientKeyPEM)
+		config.Client.Passphrase.Path = writeFile("client.passphrase", clientSecret)
+
+		// genKeyPair issues certs which expire in 180 days.
+		stats := tally.NewTestScope("", nil)
+		populatedCloser := MonitorCertExpiration(config, stats)
+		defer func() { require.NoError(populatedCloser.Close()) }()
+
+		gauges := stats.Snapshot().Gauges()
+
+		serverGauge, ok := gauges["tls_cert_expiry_days+cert=server"]
+		require.True(ok)
+		require.InDelta(180, serverGauge.Value(), 0.01)
+
+		clientGauge, ok := gauges["tls_cert_expiry_days+cert=client"]
+		require.True(ok)
+		require.InDelta(180, clientGauge.Value(), 0.01)
+	})
+
+	t.Run("metric is not emitted as 0 on empty cert, avoiding a false alarm", func(t *testing.T) {
+		require := require.New(t)
+		emptyStats := tally.NewTestScope("", nil)
+		emptyCloser := MonitorCertExpiration(&TLSConfig{}, emptyStats)
+		defer func() { require.NoError(emptyCloser.Close()) }()
+
+		emptyGauges := emptyStats.Snapshot().Gauges()
+		_, ok := emptyGauges["tls_cert_expiry_days+cert=server"]
+		require.False(ok)
+		_, ok = emptyGauges["tls_cert_expiry_days+cert=client"]
+		require.False(ok)
+	})
 }

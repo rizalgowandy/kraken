@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -25,9 +25,11 @@ import (
 	"github.com/uber-go/tally"
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/lib/backend/backenderrors"
+	"github.com/uber/kraken/utils/closers"
 	"github.com/uber/kraken/utils/memsize"
 	"github.com/uber/kraken/utils/randutil"
 	"github.com/uber/kraken/utils/testutil"
+	"go.uber.org/zap"
 )
 
 func TestClientFactory(t *testing.T) {
@@ -35,7 +37,7 @@ func TestClientFactory(t *testing.T) {
 
 	config := Config{}
 	f := blobClientFactory{}
-	_, err := f.Create(config, nil, tally.NoopScope)
+	_, err := f.Create(config, nil, tally.NoopScope, zap.NewNop().Sugar())
 	require.NoError(err)
 }
 
@@ -59,6 +61,7 @@ func TestBlobDownloadBlobSuccess(t *testing.T) {
 	config := newTestConfig(addr)
 	client, err := NewBlobClient(config, tally.NoopScope)
 	require.NoError(err)
+	defer closers.Close(client)
 
 	info, err := client.Stat(namespace, "data")
 	require.NoError(err)
@@ -89,6 +92,7 @@ func TestBlobDownloadManifestSuccess(t *testing.T) {
 	config := newTestConfig(addr)
 	client, err := NewBlobClient(config, tally.NoopScope)
 	require.NoError(err)
+	defer closers.Close(client)
 
 	info, err := client.Stat(namespace, "data")
 	require.NoError(err)
@@ -107,11 +111,13 @@ func TestBlobDownloadFileNotFound(t *testing.T) {
 	r := chi.NewRouter()
 	r.Get(fmt.Sprintf("/v2/%s/blobs/{blob}", namespace), func(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte("file not found"))
+		_, err := w.Write([]byte("file not found"))
+		require.NoError(err)
 	})
 	r.Head(fmt.Sprintf("/v2/%s/blobs/{blob}", namespace), func(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte("file not found"))
+		_, err := w.Write([]byte("file not found"))
+		require.NoError(err)
 	})
 	addr, stop := testutil.StartServer(r)
 	defer stop()
@@ -119,6 +125,7 @@ func TestBlobDownloadFileNotFound(t *testing.T) {
 	config := newTestConfig(addr)
 	client, err := NewBlobClient(config, tally.NoopScope)
 	require.NoError(err)
+	defer closers.Close(client)
 
 	_, err = client.Stat(namespace, "data")
 	require.Equal(backenderrors.ErrBlobNotFound, err)

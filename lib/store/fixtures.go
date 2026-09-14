@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,20 +14,24 @@
 package store
 
 import (
-	"io/ioutil"
 	"os"
 
+	"github.com/andres-erbsen/clock"
 	"github.com/uber/kraken/utils/testutil"
 
 	"github.com/uber-go/tally"
 )
 
 func tempdir(cleanup *testutil.Cleanup, name string) string {
-	d, err := ioutil.TempDir("/tmp", name)
+	d, err := os.MkdirTemp("/tmp", name)
 	if err != nil {
 		panic(err)
 	}
-	cleanup.Add(func() { os.RemoveAll(d) })
+	cleanup.Add(func() {
+		if err := os.RemoveAll(d); err != nil {
+			panic(err)
+		}
+	})
 	return d
 }
 
@@ -55,6 +59,22 @@ func CAStoreFixture() (*CAStore, func()) {
 	cleanup.Add(c)
 
 	s, err := NewCAStore(config, tally.NoopScope)
+	if err != nil {
+		panic(err)
+	}
+	cleanup.Add(s.Close)
+
+	return s, cleanup.Run
+}
+
+// CAStoreFixtureWithClock returns a CAStore with a custom clock for testing purposes.
+// This is useful for tests that need to control time, such as preventing automatic
+// drain operations in memory cache tests.
+func CAStoreFixtureWithClock(config CAStoreConfig, clk clock.Clock) (*CAStore, func()) {
+	var cleanup testutil.Cleanup
+	defer cleanup.Recover()
+
+	s, err := newCAStore(config, tally.NoopScope, clk)
 	if err != nil {
 		panic(err)
 	}

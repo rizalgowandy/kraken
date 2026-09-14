@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,13 +17,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/uber/kraken/utils/closers"
+	"github.com/uber/kraken/utils/log"
 
 	"github.com/uber/kraken/utils/handler"
 
@@ -38,7 +40,7 @@ type Server struct {
 
 // NewServer creates a new Server.
 func NewServer() *Server {
-	dir, err := ioutil.TempDir("/tmp", "kraken-testfs")
+	dir, err := os.MkdirTemp("/tmp", "kraken-testfs")
 	if err != nil {
 		panic(err)
 	}
@@ -58,11 +60,17 @@ func (s *Server) Handler() http.Handler {
 
 // Cleanup cleans up the underlying directory of s.
 func (s *Server) Cleanup() {
-	os.RemoveAll(s.dir)
+	err := os.RemoveAll(s.dir)
+	if err != nil {
+		log.Error(err)
+	}
 }
 
 func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte("OK"))
+	_, err := w.Write([]byte("OK"))
+	if err != nil {
+		log.Error(err)
+	}
 }
 
 func (s *Server) statHandler(w http.ResponseWriter, r *http.Request) error {
@@ -116,7 +124,7 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return handler.Errorf("create: %s", err)
 	}
-	defer f.Close()
+	defer closers.Close(f)
 	if _, err := io.Copy(f, r.Body); err != nil {
 		return handler.Errorf("copy: %s", err)
 	}
@@ -160,6 +168,6 @@ func (s *Server) listHandler(w http.ResponseWriter, r *http.Request) error {
 // path normalizes some file or directory entry into a path.
 func (s *Server) path(entry string) string {
 	// Allows listing tags by repo.
-	entry = strings.Replace(entry, ":", "/", -1)
+	entry = strings.ReplaceAll(entry, ":", "/")
 	return filepath.Join(s.dir, entry)
 }

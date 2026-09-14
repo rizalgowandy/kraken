@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -22,6 +22,8 @@ import (
 	_ "net/http/pprof" // Registers /debug/pprof endpoints in http.DefaultServeMux.
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/uber/kraken/build-index/tagclient"
 	"github.com/uber/kraken/core"
@@ -29,15 +31,21 @@ import (
 	"github.com/uber/kraken/lib/middleware"
 	"github.com/uber/kraken/lib/store"
 	"github.com/uber/kraken/lib/torrent/scheduler"
+	"github.com/uber/kraken/tracker/announceclient"
+	"github.com/uber/kraken/utils/closers"
 	"github.com/uber/kraken/utils/handler"
 	"github.com/uber/kraken/utils/httputil"
+	"github.com/uber/kraken/utils/memsize"
 
 	"github.com/go-chi/chi"
 	"github.com/uber-go/tally"
 )
 
 // Config defines Server configuration.
-type Config struct{}
+type Config struct {
+	// How long a successful readiness check is valid for. If 0, disable caching successful readiness.
+	readinessCacheTTL time.Duration `yaml:"readiness_cache_ttl"`
+}
 
 // Server defines the agent HTTP server.
 type Server struct {
@@ -46,7 +54,9 @@ type Server struct {
 	cads             *store.CADownloadStore
 	sched            scheduler.ReloadableScheduler
 	tags             tagclient.Client
+	ac               announceclient.Client
 	containerRuntime containerruntime.Factory
+	lastReady        time.Time
 }
 
 // New creates a new Server.
@@ -56,13 +66,22 @@ func New(
 	cads *store.CADownloadStore,
 	sched scheduler.ReloadableScheduler,
 	tags tagclient.Client,
+	ac announceclient.Client,
 	containerRuntime containerruntime.Factory) *Server {
 
 	stats = stats.Tagged(map[string]string{
 		"module": "agentserver",
 	})
 
-	return &Server{config, stats, cads, sched, tags, containerRuntime}
+	return &Server{
+		config:           config,
+		stats:            stats,
+		cads:             cads,
+		sched:            sched,
+		tags:             tags,
+		ac:               ac,
+		containerRuntime: containerRuntime,
+	}
 }
 
 // Handler returns the HTTP handler.
@@ -73,6 +92,7 @@ func (s *Server) Handler() http.Handler {
 	r.Use(middleware.LatencyTimer(s.stats))
 
 	r.Get("/health", handler.Wrap(s.healthHandler))
+	r.Get("/readiness", handler.Wrap(s.readinessCheckHandler))
 
 	r.Get("/tags/{tag}", handler.Wrap(s.getTagHandler))
 
@@ -107,7 +127,9 @@ func (s *Server) getTagHandler(w http.ResponseWriter, r *http.Request) error {
 		}
 		return handler.Errorf("get tag: %s", err)
 	}
-	io.WriteString(w, d.String())
+	if _, err := io.WriteString(w, d.String()); err != nil {
+		return fmt.Errorf("write response: %s", err)
+	}
 	return nil
 }
 
@@ -138,6 +160,10 @@ func (s *Server) downloadBlobHandler(w http.ResponseWriter, r *http.Request) err
 			return handler.Errorf("store: %s", err)
 		}
 	}
+	defer closers.Close(f)
+	mbServed := int64(uint64(f.Size()) / memsize.MB)
+	s.stats.Counter("mb_served").Inc(mbServed)
+
 	if _, err := io.Copy(w, f); err != nil {
 		return fmt.Errorf("copy file: %s", err)
 	}
@@ -190,14 +216,63 @@ func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) error {
 	if err := s.sched.Probe(); err != nil {
 		return handler.Errorf("probe torrent client: %s", err)
 	}
-	io.WriteString(w, "OK")
+	if _, err := io.WriteString(w, "OK"); err != nil {
+		return fmt.Errorf("write response: %s", err)
+	}
+	return nil
+}
+
+func (s *Server) readinessCheckHandler(w http.ResponseWriter, r *http.Request) error {
+	if s.config.readinessCacheTTL != 0 {
+		rCacheValid := s.lastReady.Add(s.config.readinessCacheTTL).After(time.Now())
+		if rCacheValid {
+			if _, err := io.WriteString(w, "OK"); err != nil {
+				return fmt.Errorf("write response: %s", err)
+			}
+			return nil
+		}
+	}
+
+	var schedErr, buildIndexErr, trackerErr error
+	var wg sync.WaitGroup
+
+	wg.Add(3)
+	go func() {
+		schedErr = s.sched.Probe()
+		wg.Done()
+	}()
+	go func() {
+		buildIndexErr = s.tags.CheckReadiness()
+		wg.Done()
+	}()
+	go func() {
+		trackerErr = s.ac.CheckReadiness()
+		wg.Done()
+	}()
+	wg.Wait()
+
+	// TODO(akalpakchiev): Replace with errors.Join once upgraded to Go 1.20+.
+	errMsgs := []string{}
+	for _, err := range []error{schedErr, buildIndexErr, trackerErr} {
+		if err != nil {
+			errMsgs = append(errMsgs, err.Error())
+		}
+	}
+	if len(errMsgs) != 0 {
+		return handler.Errorf("agent not ready: %v", strings.Join(errMsgs, "\n")).Status(http.StatusServiceUnavailable)
+	}
+
+	s.lastReady = time.Now()
+	if _, err := io.WriteString(w, "OK"); err != nil {
+		return fmt.Errorf("write response: %s", err)
+	}
 	return nil
 }
 
 // patchSchedulerConfigHandler restarts the agent torrent scheduler with
 // the config in request body.
 func (s *Server) patchSchedulerConfigHandler(w http.ResponseWriter, r *http.Request) error {
-	defer r.Body.Close()
+	defer closers.Close(r.Body)
 	var config scheduler.Config
 	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
 		return handler.Errorf("json decode: %s", err).Status(http.StatusBadRequest)

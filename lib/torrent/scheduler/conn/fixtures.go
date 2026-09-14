@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -24,6 +24,7 @@ import (
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/lib/torrent/networkevent"
 	"github.com/uber/kraken/lib/torrent/storage"
+	"github.com/uber/kraken/utils/closers"
 	"github.com/uber/kraken/utils/testutil"
 )
 
@@ -49,20 +50,20 @@ func PipeFixture(
 	defer cleanup.Recover()
 
 	nc1, nc2 := net.Pipe()
-	cleanup.Add(func() { nc1.Close() })
-	cleanup.Add(func() { nc2.Close() })
+	cleanup.Add(func() { closers.Close(nc1) })
+	cleanup.Add(func() { closers.Close(nc2) })
 
 	var err error
 
 	local, err = HandshakerFixture(config).newConn(
-		noopDeadline{nc1}, core.PeerIDFixture(), info, false)
+		noopDeadline{nc1}, core.PeerIDFixture(), false, info, false)
 	if err != nil {
 		panic(err)
 	}
 	local.Start()
 
 	remote, err = HandshakerFixture(config).newConn(
-		noopDeadline{nc2}, core.PeerIDFixture(), info, true)
+		noopDeadline{nc2}, core.PeerIDFixture(), false, info, true)
 	if err != nil {
 		panic(err)
 	}

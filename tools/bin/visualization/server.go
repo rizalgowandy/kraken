@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -79,9 +79,3 @@ func (s *server) getEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 }
-
-type byTime []networkevent.Event
-
-func (s byTime) Len() int           { return len(s) }
-func (s byTime) Less(i, j int) bool { return s[i].Time.Before(s[j].Time) }
-func (s byTime) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }

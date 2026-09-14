@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,7 +16,7 @@ package config
 // OriginTemplate is the default origin nginx tmpl.
 const OriginTemplate = `
 server {
-  listen {{.port}};
+  listen {{.port}}{{if .ssl_enabled}} ssl{{end}}{{if .listen_backlog}} backlog={{.listen_backlog}}{{end}};
 
   {{.client_verification}}
 
@@ -27,6 +27,15 @@ server {
 
   gzip on;
   gzip_types text/plain test/csv application/json;
+
+  # Committing large blobs might take a while.
+  proxy_read_timeout {{if .proxy_read_timeout}}{{.proxy_read_timeout}}{{else}}3m{{end}};
+
+  proxy_set_header traceparent $http_traceparent;
+  proxy_set_header tracestate $http_tracestate;
+  proxy_set_header jaeger-debug-id $http_jaeger_debug_id;
+
+{{healthEndpoint .server}}
 
   location / {
     proxy_pass http://{{.server}};

@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,8 +17,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/uber/kraken/utils/handler"
 	"github.com/stretchr/testify/require"
+	"github.com/uber/kraken/utils/handler"
 )
 
 func TestParseContentRangeHeaderBadRequests(t *testing.T) {
@@ -39,7 +39,9 @@ func TestParseContentRangeHeaderBadRequests(t *testing.T) {
 			h.Add("Content-Range", test.value)
 			start, end, err := parseContentRange(h)
 			require.Error(err)
-			require.Equal(http.StatusBadRequest, err.(*handler.Error).GetStatus())
+			handlerErr, ok := err.(*handler.Error)
+			require.True(ok, "expected *handler.Error")
+			require.Equal(http.StatusBadRequest, handlerErr.GetStatus())
 			require.Equal(int64(0), start)
 			require.Equal(int64(0), end)
 		})

@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,14 +18,14 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/andres-erbsen/clock"
+	"github.com/uber-go/tally"
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/gen/go/proto/p2p"
 	"github.com/uber/kraken/lib/torrent/networkevent"
 	"github.com/uber/kraken/lib/torrent/storage"
 	"github.com/uber/kraken/utils/bandwidth"
-
-	"github.com/andres-erbsen/clock"
-	"github.com/uber-go/tally"
+	"github.com/uber/kraken/utils/closers"
 	"github.com/willf/bitset"
 	"go.uber.org/zap"
 )
@@ -172,7 +172,7 @@ func (pc *PendingConn) Namespace() string {
 
 // Close closes the connection.
 func (pc *PendingConn) Close() {
-	pc.nc.Close()
+	closers.Close(pc.nc)
 }
 
 // HandshakeResult wraps data returned from a successful handshake.
@@ -210,7 +210,7 @@ func NewHandshaker(
 		"module": "conn",
 	})
 
-	bl, err := bandwidth.NewLimiter(config.Bandwidth, bandwidth.WithLogger(logger))
+	bl, err := bandwidth.NewLimiter(config.Bandwidth, stats, bandwidth.WithLogger(logger))
 	if err != nil {
 		return nil, fmt.Errorf("bandwidth: %s", err)
 	}
@@ -248,7 +248,10 @@ func (h *Handshaker) Establish(
 	if err := h.sendHandshake(pc.nc, info, remoteBitfields, ""); err != nil {
 		return nil, fmt.Errorf("send handshake: %s", err)
 	}
-	c, err := h.newConn(pc.nc, pc.handshake.peerID, info, true)
+	// This code is only executed when a peer initiates a handshake with us. Origins don't
+	// initiate handshakes, so we can conclude that the peer is not an origin.
+	isPeerOrigin := false
+	c, err := h.newConn(pc.nc, pc.handshake.peerID, isPeerOrigin, info, true)
 	if err != nil {
 		return nil, fmt.Errorf("new conn: %s", err)
 	}
@@ -260,6 +263,7 @@ func (h *Handshaker) Establish(
 // its connections for the torrent.
 func (h *Handshaker) Initialize(
 	peerID core.PeerID,
+	isPeerOrigin bool,
 	addr string,
 	info *storage.TorrentInfo,
 	remoteBitfields RemoteBitfields,
@@ -269,9 +273,9 @@ func (h *Handshaker) Initialize(
 	if err != nil {
 		return nil, fmt.Errorf("dial: %s", err)
 	}
-	r, err := h.fullHandshake(nc, peerID, info, remoteBitfields, namespace)
+	r, err := h.fullHandshake(nc, peerID, isPeerOrigin, info, remoteBitfields, namespace)
 	if err != nil {
-		nc.Close()
+		closers.Close(nc)
 		return nil, err
 	}
 	return r, nil
@@ -313,6 +317,7 @@ func (h *Handshaker) readHandshake(nc net.Conn) (*handshake, error) {
 func (h *Handshaker) fullHandshake(
 	nc net.Conn,
 	peerID core.PeerID,
+	isPeerOrigin bool,
 	info *storage.TorrentInfo,
 	remoteBitfields RemoteBitfields,
 	namespace string) (*HandshakeResult, error) {
@@ -327,7 +332,7 @@ func (h *Handshaker) fullHandshake(
 	if hs.peerID != peerID {
 		return nil, errors.New("unexpected peer id")
 	}
-	c, err := h.newConn(nc, peerID, info, false)
+	c, err := h.newConn(nc, peerID, isPeerOrigin, info, false)
 	if err != nil {
 		return nil, fmt.Errorf("new conn: %s", err)
 	}
@@ -337,6 +342,7 @@ func (h *Handshaker) fullHandshake(
 func (h *Handshaker) newConn(
 	nc net.Conn,
 	peerID core.PeerID,
+	isPeerOrigin bool,
 	info *storage.TorrentInfo,
 	openedByRemote bool) (*Conn, error) {
 
@@ -350,6 +356,7 @@ func (h *Handshaker) newConn(
 		nc,
 		h.peerID,
 		peerID,
+		isPeerOrigin,
 		info,
 		openedByRemote,
 		zap.NewNop().Sugar())

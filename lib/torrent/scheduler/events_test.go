@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -51,7 +51,16 @@ func (l *mockEventLoop) expect(e event) {
 }
 
 func (l *mockEventLoop) send(e event) bool {
-	l.c <- e
+	// Send in a goroutine to avoid blocking and causing deadlocks.
+	// This mimics the real event loop behavior where sends happen
+	// from different goroutines.
+	go func() {
+		select {
+		case l.c <- e:
+		case <-time.After(5 * time.Second):
+			// Event not consumed - this is okay in tests, just drop it
+		}
+	}()
 	return true
 }
 

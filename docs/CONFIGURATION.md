@@ -122,7 +122,7 @@ For origins, the number of files can also be limited as origins are dedicated se
 
 # Configuring Hash Ring
 
-Both orgin and tracker clusters are self-healing hash rings and both can be represented by either a dns name or a static list of hosts.
+Both origin and tracker clusters are self-healing hash rings and both can be represented by either a dns name or a static list of hosts.
 
 We use rendezvous hashing for constructing ring membership.
 
@@ -182,7 +182,7 @@ As shown in this example, if 3 announce requests to one tracker fail with networ
 
 Storage backends are used by Origin and Build-Index for data persistence. Kraken has support for S3, GCS, ECR, HDFS, http (readonly), and Docker Registry (readonly) as [backends](https://github.com/uber/kraken/tree/master/lib/backend).
 
-Multiple backends can be used at the name time, configured based on namespaces of requested blob and tag  (for docker images, that means the part of image name before ":").
+Multiple backends can be used at the same time, configured based on namespaces of requested blob and tag  (for docker images, that means the part of image name before ":").
 
 Example origin config that uses multiple backends:
 

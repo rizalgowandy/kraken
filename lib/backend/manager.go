@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"regexp"
 
+	"github.com/uber/kraken/lib/backend/backenderrors"
 	"github.com/uber/kraken/utils/bandwidth"
 	"github.com/uber/kraken/utils/log"
 
@@ -30,18 +31,20 @@ var (
 )
 
 type backend struct {
-	regexp *regexp.Regexp
-	client Client
+	regexp    *regexp.Regexp
+	client    Client
+	mustReady bool
 }
 
-func newBackend(namespace string, c Client) (*backend, error) {
+func newBackend(namespace string, c Client, mustReady bool) (*backend, error) {
 	re, err := regexp.Compile(namespace)
 	if err != nil {
 		return nil, fmt.Errorf("regexp: %s", err)
 	}
 	return &backend{
-		regexp: re,
-		client: c,
+		regexp:    re,
+		client:    c,
+		mustReady: mustReady,
 	}, nil
 }
 
@@ -50,8 +53,19 @@ type Manager struct {
 	backends []*backend
 }
 
+// ManagerConfig is config for backend manager.
+type ManagerConfig struct {
+	Log log.Config `yaml:"log"`
+}
+
 // NewManager creates a new backend Manager.
-func NewManager(configs []Config, auth AuthConfig, stats tally.Scope) (*Manager, error) {
+func NewManager(managerConfig ManagerConfig, configs []Config, auth AuthConfig, stats tally.Scope) (*Manager, error) {
+	logger, err := log.New(managerConfig.Log, nil)
+	if err != nil {
+		return nil, fmt.Errorf("log: %s", err)
+	}
+	slogger := logger.Sugar()
+
 	var backends []*backend
 	for _, config := range configs {
 		config = config.applyDefaults()
@@ -68,19 +82,20 @@ func NewManager(configs []Config, auth AuthConfig, stats tally.Scope) (*Manager,
 		if err != nil {
 			return nil, fmt.Errorf("get backend client factory: %s", err)
 		}
-		c, err = factory.Create(backendConfig, auth, stats)
+		c, err = factory.Create(backendConfig, auth, stats, slogger)
 		if err != nil {
 			return nil, fmt.Errorf("create backend client: %s", err)
 		}
 
 		if config.Bandwidth.Enable {
-			l, err := bandwidth.NewLimiter(config.Bandwidth)
+			l, err := bandwidth.NewLimiter(
+				config.Bandwidth, stats.Tagged(map[string]string{"namespace": config.Namespace}))
 			if err != nil {
 				return nil, fmt.Errorf("bandwidth: %s", err)
 			}
 			c = throttle(c, l)
 		}
-		b, err := newBackend(config.Namespace, c)
+		b, err := newBackend(config.Namespace, c, config.MustReady)
 		if err != nil {
 			return nil, fmt.Errorf("new backend for namespace %s: %s", config.Namespace, err)
 		}
@@ -112,13 +127,13 @@ func (m *Manager) AdjustBandwidth(denominator int) error {
 // Register dynamically registers a namespace with a provided client. Register
 // should be primarily used for testing purposes -- normally, namespaces should
 // be statically configured and provided upon construction of the Manager.
-func (m *Manager) Register(namespace string, c Client) error {
+func (m *Manager) Register(namespace string, c Client, mustReady bool) error {
 	for _, b := range m.backends {
 		if b.regexp.String() == namespace {
 			return fmt.Errorf("namespace %s already exists", namespace)
 		}
 	}
-	b, err := newBackend(namespace, c)
+	b, err := newBackend(namespace, c, mustReady)
 	if err != nil {
 		return fmt.Errorf("new backend: %s", err)
 	}
@@ -138,4 +153,32 @@ func (m *Manager) GetClient(namespace string) (Client, error) {
 		}
 	}
 	return nil, ErrNamespaceNotFound
+}
+
+// CheckReadiness returns whether the backends are ready (available).
+// A backend must be explicitly configured as required for readiness to be checked.
+func (m *Manager) CheckReadiness() error {
+	for _, b := range m.backends {
+		if !b.mustReady {
+			continue
+		}
+		_, err := b.client.Stat(ReadinessCheckNamespace, ReadinessCheckName)
+		if err != nil && err != backenderrors.ErrBlobNotFound {
+			return fmt.Errorf("backend for namespace '%s' not ready: %s", b.regexp.String(), err)
+		}
+	}
+	return nil
+}
+
+func (m *Manager) Close() error {
+	totalErrors := make([]error, 0)
+	for _, b := range m.backends {
+		if err := b.client.Close(); err != nil {
+			totalErrors = append(totalErrors, fmt.Errorf("closing backend for namespace '%s': %s", b.regexp.String(), err))
+		}
+	}
+	if len(totalErrors) > 0 {
+		return errors.Join(totalErrors...)
+	}
+	return nil
 }

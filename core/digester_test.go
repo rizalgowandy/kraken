@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,7 +16,6 @@ package core
 import (
 	"bytes"
 	"io"
-	"io/ioutil"
 	"strings"
 	"testing"
 
@@ -41,7 +40,8 @@ func TestFromBytes(t *testing.T) {
 	require := require.New(t)
 
 	d := NewDigester()
-	d.FromBytes([]byte(_testStr))
+	_, err := d.FromBytes([]byte(_testStr))
+	require.NoError(err)
 
 	hexDigest := d.Digest().Hex()
 	require.NoError(ValidateSHA256(hexDigest))
@@ -53,7 +53,8 @@ func TestFromReader(t *testing.T) {
 
 	d := NewDigester()
 	r := strings.NewReader(_testStr)
-	d.FromReader(r)
+	_, err := d.FromReader(r)
+	require.NoError(err)
 
 	hexDigest := d.Digest().Hex()
 	require.NoError(ValidateSHA256(hexDigest))
@@ -71,7 +72,7 @@ func TestTeeReader(t *testing.T) {
 
 	_, err := io.Copy(w, tr)
 	require.NoError(err)
-	b, err := ioutil.ReadAll(w)
+	b, err := io.ReadAll(w)
 	require.NoError(err)
 	require.Equal(_testStr, string(b))
 

@@ -28,10 +28,15 @@ import (
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/lib/backend"
 	"github.com/uber/kraken/lib/backend/backenderrors"
+	"go.uber.org/zap"
 	"gopkg.in/yaml.v2"
 )
 
 const _sql = "sql"
+
+func init() {
+	backend.Register(_sql, &factory{})
+}
 
 type factory struct{}
 
@@ -40,7 +45,7 @@ func (f *factory) Name() string {
 }
 
 func (f *factory) Create(
-	confRaw interface{}, masterAuthConfig backend.AuthConfig, stats tally.Scope) (backend.Client, error) {
+	confRaw interface{}, masterAuthConfig backend.AuthConfig, stats tally.Scope, _ *zap.SugaredLogger) (backend.Client, error) {
 
 	confBytes, err := yaml.Marshal(confRaw)
 	if err != nil {
@@ -275,4 +280,9 @@ func dockerTagsQuery(c *Client, prefix string) (*backend.ListResult, error) {
 	return &backend.ListResult{
 		Names: names,
 	}, nil
+}
+
+// Close closes the client and releases any held resources.
+func (c *Client) Close() error {
+	return c.db.Close()
 }

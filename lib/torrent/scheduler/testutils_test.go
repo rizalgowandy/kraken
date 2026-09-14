@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,21 +14,18 @@
 package scheduler
 
 import (
-	"flag"
-	"io/ioutil"
+	"errors"
+	"io"
 	"net"
-	"os"
 	"reflect"
 	"strconv"
+	"syscall"
 	"testing"
 	"time"
-
-	"go.uber.org/zap"
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 	"github.com/uber-go/tally"
-
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/lib/hashring"
 	"github.com/uber/kraken/lib/hostlist"
@@ -47,25 +44,6 @@ import (
 	"github.com/uber/kraken/utils/log"
 	"github.com/uber/kraken/utils/testutil"
 )
-
-const testTempDir = "/tmp/kraken_scheduler"
-
-func Init() {
-	os.Mkdir(testTempDir, 0775)
-
-	debug := flag.Bool("scheduler.debug", false, "log all Scheduler debugging output")
-	flag.Parse()
-
-	zapConfig := zap.NewProductionConfig()
-	zapConfig.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
-	zapConfig.Encoding = "console"
-
-	if !*debug {
-		zapConfig.OutputPaths = []string{}
-	}
-
-	log.ConfigureLogger(zapConfig)
-}
 
 func configFixture() Config {
 	return Config{
@@ -115,6 +93,10 @@ type testPeer struct {
 	cleanup        *testutil.Cleanup
 }
 
+// _maxPeerBindAttempts bounds how many ports newPeer draws before it gives up
+// on finding one the scheduler can still bind.
+const _maxPeerBindAttempts = 5
+
 func (m *testMocks) newPeer(config Config, options ...option) *testPeer {
 	var cleanup testutil.Cleanup
 	m.cleanup.Add(cleanup.Run)
@@ -126,21 +108,36 @@ func (m *testMocks) newPeer(config Config, options ...option) *testPeer {
 
 	ta := agentstorage.NewTorrentArchive(stats, cads, m.metaInfoClient)
 
-	pctx := core.PeerContext{
-		PeerID: core.PeerIDFixture(),
-		Zone:   "zone1",
-		IP:     "localhost",
-		Port:   findFreePort(),
-	}
-	ac := announceclient.New(pctx, hashring.NoopPassiveRing(hostlist.Fixture(m.trackerAddr)), nil)
 	tp := networkevent.NewTestProducer()
 
-	s, err := newScheduler(config, ta, stats, pctx, ac, tp, options...)
-	if err != nil {
-		panic(err)
-	}
-	if err := s.start(announcequeue.New()); err != nil {
-		panic(err)
+	// findFreePort must release a port before the scheduler can bind it, so
+	// another listener may still claim it in between. Re-draw a port and retry
+	// instead of panicking the whole test binary. start returns before it adds
+	// to the wait group or launches a goroutine, so a scheduler which failed to
+	// bind holds nothing and needs no cleanup.
+	var pctx core.PeerContext
+	var s *scheduler
+	for attempt := 1; ; attempt++ {
+		pctx = core.PeerContext{
+			PeerID: core.PeerIDFixture(),
+			Zone:   "zone1",
+			IP:     "localhost",
+			Port:   findFreePort(),
+		}
+		ac := announceclient.New(pctx, hashring.NoopPassiveRing(hostlist.Fixture(m.trackerAddr)), nil)
+
+		var err error
+		s, err = newScheduler(config, ta, stats, pctx, ac, tp, options...)
+		if err != nil {
+			panic(err)
+		}
+		err = s.start(announcequeue.New())
+		if err == nil {
+			break
+		}
+		if attempt == _maxPeerBindAttempts || !errors.Is(err, syscall.EADDRINUSE) {
+			panic(err)
+		}
 	}
 	cleanup.Add(s.Stop)
 
@@ -184,21 +181,32 @@ func (p *testPeer) checkTorrent(t *testing.T, namespace string, blob *core.BlobF
 	for i := 0; i < tor.NumPieces(); i++ {
 		pr, err := tor.GetPieceReader(i)
 		require.NoError(err)
-		defer pr.Close()
-		pieceData, err := ioutil.ReadAll(pr)
+		pieceData, err := io.ReadAll(pr)
 		require.NoError(err)
+		require.NoError(pr.Close())
 		copy(cursor, pieceData)
 		cursor = cursor[tor.PieceLength(i):]
 	}
 	require.Equal(blob.Content, result)
 }
 
+// findFreePort returns a port which is free for a wildcard bind.
+//
+// The probe below must bind the same address form the caller binds. A
+// scheduler binds the wildcard ":%d" (see scheduler.start), and the kernel
+// lets a loopback bind and a wildcard bind share one port. Probing
+// "localhost:0" therefore hands back ports which a live peer already listens
+// on, and the next scheduler.start panics with "address already in use".
 func findFreePort() int {
-	l, err := net.Listen("tcp", "localhost:0")
+	l, err := net.Listen("tcp", ":0")
 	if err != nil {
 		panic(err)
 	}
-	defer l.Close()
+	defer func() {
+		if err := l.Close(); err != nil {
+			panic(err)
+		}
+	}()
 	_, portStr, err := net.SplitHostPort(l.Addr().String())
 	if err != nil {
 		panic(err)
@@ -226,21 +234,6 @@ func (e hasConnEvent) apply(s *state) {
 		}
 	}
 	e.result <- found
-}
-
-// waitForConnEstablished waits until s has established a connection to peerID for the
-// torrent of infoHash.
-func waitForConnEstablished(t *testing.T, s *scheduler, peerID core.PeerID, infoHash core.InfoHash) {
-	err := testutil.PollUntilTrue(5*time.Second, func() bool {
-		result := make(chan bool)
-		s.eventLoop.send(hasConnEvent{peerID, infoHash, result})
-		return <-result
-	})
-	if err != nil {
-		t.Fatalf(
-			"scheduler=%s did not establish conn to peer=%s hash=%s: %s",
-			s.pctx.PeerID, peerID, infoHash, err)
-	}
 }
 
 // waitForConnRemoved waits until s has closed the connection to peerID for the

@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,23 +14,24 @@
 package blobrefresh
 
 import (
-	"io/ioutil"
+	"io"
 	"os"
 	"testing"
 	"time"
 
+	"github.com/andres-erbsen/clock"
+	"github.com/golang/mock/gomock"
+	"github.com/stretchr/testify/require"
+	"github.com/uber-go/tally"
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/lib/backend"
 	"github.com/uber/kraken/lib/metainfogen"
 	"github.com/uber/kraken/lib/store"
 	"github.com/uber/kraken/lib/store/metadata"
-	"github.com/uber/kraken/mocks/lib/backend"
+	mockbackend "github.com/uber/kraken/mocks/lib/backend"
+	"github.com/uber/kraken/utils/closers"
 	"github.com/uber/kraken/utils/mockutil"
 	"github.com/uber/kraken/utils/testutil"
-
-	"github.com/golang/mock/gomock"
-	"github.com/stretchr/testify/require"
-	"github.com/uber-go/tally"
 )
 
 const _testPieceLength = 10
@@ -40,6 +41,7 @@ type refresherMocks struct {
 	cas      *store.CAStore
 	backends *backend.Manager
 	config   Config
+	t        *testing.T
 }
 
 func newRefresherMocks(t *testing.T) (*refresherMocks, func()) {
@@ -54,7 +56,7 @@ func newRefresherMocks(t *testing.T) (*refresherMocks, func()) {
 
 	backends := backend.ManagerFixture()
 
-	return &refresherMocks{ctrl, cas, backends, Config{}}, cleanup.Run
+	return &refresherMocks{ctrl, cas, backends, Config{}, t}, cleanup.Run
 }
 
 func (m *refresherMocks) new() *Refresher {
@@ -63,7 +65,8 @@ func (m *refresherMocks) new() *Refresher {
 
 func (m *refresherMocks) newClient(namespace string) *mockbackend.MockClient {
 	client := mockbackend.NewMockClient(m.ctrl)
-	m.backends.Register(namespace, client)
+	err := m.backends.Register(namespace, client, false)
+	require.NoError(m.t, err)
 	return client
 }
 
@@ -92,7 +95,8 @@ func TestRefresh(t *testing.T) {
 
 	f, err := mocks.cas.GetCacheFileReader(blob.Digest.Hex())
 	require.NoError(err)
-	result, err := ioutil.ReadAll(f)
+	result, err := io.ReadAll(f)
+	require.NoError(err)
 	require.Equal(string(blob.Content), string(result))
 
 	var tm metadata.TorrentMeta
@@ -139,6 +143,113 @@ func TestRefreshSizeLimitWithValidSize(t *testing.T) {
 	client.EXPECT().Download(namespace, blob.Digest.Hex(), mockutil.MatchWriter(blob.Content)).Return(nil)
 
 	require.NoError(refresher.Refresh(namespace, blob.Digest))
+
+	require.NoError(testutil.PollUntilTrue(5*time.Second, func() bool {
+		_, err := mocks.cas.GetCacheFileStat(blob.Digest.Hex())
+		return !os.IsNotExist(err)
+	}))
+}
+
+// TestRefreshWithMemoryCache tests that refresh works correctly when memory cache is enabled.
+// This verifies the metainfo generation optimization where metainfo is generated inline
+// when blob is buffered in memory, avoiding duplicate generation.
+func TestRefreshWithMemoryCache(t *testing.T) {
+	require := require.New(t)
+
+	// Create CAStore config with memory cache enabled
+	config, configCleanup := store.CAStoreConfigFixture()
+	defer configCleanup()
+
+	config.MemoryCache = store.MemoryCacheConfig{
+		Enabled: true,
+		MaxSize: 10 * 1024 * 1024, // 10MB
+		TTL:     time.Hour,
+	}
+
+	// Use mock clock to prevent automatic drain during test
+	mockClock := clock.NewMock()
+	cas, cleanup := store.CAStoreFixtureWithClock(config, mockClock)
+	defer cleanup()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	backends := backend.ManagerFixture()
+	namespace := core.TagFixture()
+	client := mockbackend.NewMockClient(ctrl)
+	err := backends.Register(namespace, client, false)
+	require.NoError(err)
+
+	refresher := New(Config{}, tally.NoopScope, cas, backends, metainfogen.Fixture(cas, _testPieceLength))
+
+	blob := core.SizedBlobFixture(100, uint64(_testPieceLength))
+
+	client.EXPECT().Stat(namespace, blob.Digest.Hex()).Return(core.NewBlobInfo(int64(len(blob.Content))), nil)
+	client.EXPECT().Download(namespace, blob.Digest.Hex(), mockutil.MatchWriter(blob.Content)).Return(nil)
+
+	// Refresh should complete successfully with memory cache enabled
+	require.NoError(refresher.Refresh(namespace, blob.Digest))
+
+	// Poll until blob is available in memory (async download completes)
+	// With memory cache enabled, blob will be in memory first, then drained to disk
+	require.NoError(testutil.PollUntilTrue(5*time.Second, func() bool {
+		return cas.CheckInMemCache(blob.Digest.Hex())
+	}))
+
+	// Poll until blob is drained to disk (no longer in memory cache)
+	require.NoError(testutil.PollUntilTrue(5*time.Second, func() bool {
+		mockClock.Add(100 * time.Millisecond)
+		return !cas.CheckInMemCache(blob.Digest.Hex())
+	}))
+
+	// Verify blob is accessible from disk
+	reader, err := cas.GetCacheFileReader(blob.Digest.Hex())
+	require.NoError(err)
+	defer closers.Close(reader)
+
+	diskData := make([]byte, len(blob.Content))
+	_, err = reader.Read(diskData)
+	require.NoError(err)
+	require.Equal(blob.Content, diskData)
+}
+
+func TestDedupSameBlobWithDifferentNamespaces(t *testing.T) {
+	require := require.New(t)
+
+	mocks, cleanup := newRefresherMocks(t)
+	defer cleanup()
+
+	refresher := mocks.new()
+
+	namespace1 := core.TagFixture()
+	namespace2 := core.TagFixture()
+	client1 := mocks.newClient(namespace1)
+	client2 := mocks.newClient(namespace2)
+
+	blob := core.SizedBlobFixture(100, uint64(_testPieceLength))
+
+	client1.EXPECT().Stat(namespace1, blob.Digest.Hex()).Return(core.NewBlobInfo(int64(len(blob.Content))), nil)
+	client2.EXPECT().Stat(namespace2, blob.Digest.Hex()).Return(core.NewBlobInfo(int64(len(blob.Content))), nil)
+
+	downloadStarted := make(chan struct{})
+	finishDownload := make(chan struct{})
+
+	client1.EXPECT().Download(namespace1, blob.Digest.Hex(), gomock.Any()).DoAndReturn(
+		func(_ string, _ string, w io.Writer) error {
+			close(downloadStarted)
+			<-finishDownload
+			_, err := w.Write(blob.Content)
+			return err
+		},
+	)
+
+	require.NoError(refresher.Refresh(namespace1, blob.Digest))
+	<-downloadStarted
+
+	err := refresher.Refresh(namespace2, blob.Digest)
+	require.Equal(ErrPending, err)
+
+	close(finishDownload)
 
 	require.NoError(testutil.PollUntilTrue(5*time.Second, func() bool {
 		_, err := mocks.cas.GetCacheFileStat(blob.Digest.Hex())

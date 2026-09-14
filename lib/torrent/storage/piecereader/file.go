@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,7 +16,6 @@ package piecereader
 import (
 	"fmt"
 	"io"
-	"os"
 
 	"github.com/uber/kraken/lib/store"
 )
@@ -53,7 +52,7 @@ func (r *FileReader) Read(p []byte) (int, error) {
 		if err != nil {
 			return 0, fmt.Errorf("open: %s", err)
 		}
-		if _, err := f.Seek(r.offset, os.SEEK_SET); err != nil {
+		if _, err := f.Seek(r.offset, io.SeekStart); err != nil {
 			return 0, fmt.Errorf("seek: %s", err)
 		}
 		r.reader = io.LimitReader(f, r.length)

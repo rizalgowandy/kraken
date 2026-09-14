@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,21 +14,14 @@
 package torrentlog
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"time"
 
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/utils/log"
-
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-)
-
-var (
-	errEmptyReceivedPieces    = errors.New("empty received piece counts")
-	errNegativeReceivedPieces = errors.New("negative value in received piece counts")
 )
 
 // Logger wraps structured log entries for important torrent events. These events
@@ -189,7 +182,9 @@ func (l *Logger) LeecherSummaries(
 
 // Sync flushes the log.
 func (l *Logger) Sync() {
-	l.zap.Sync()
+	if err := l.zap.Sync(); err != nil {
+		fmt.Printf("Failed to sync logger: %s", err)
+	}
 }
 
 // SeederSummary contains information about piece requests to and pieces received from a peer.
@@ -216,7 +211,9 @@ type SeederSummaries []SeederSummary
 // MarshalLogArray marshals a SeederSummaries slice for logging.
 func (ss SeederSummaries) MarshalLogArray(enc zapcore.ArrayEncoder) error {
 	for _, summary := range ss {
-		enc.AppendObject(summary)
+		if err := enc.AppendObject(summary); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -243,7 +240,9 @@ type LeecherSummaries []LeecherSummary
 // MarshalLogArray marshals a LeecherSummaries slice for logging.
 func (ls LeecherSummaries) MarshalLogArray(enc zapcore.ArrayEncoder) error {
 	for _, summary := range ls {
-		enc.AppendObject(summary)
+		if err := enc.AppendObject(summary); err != nil {
+			return err
+		}
 	}
 	return nil
 }

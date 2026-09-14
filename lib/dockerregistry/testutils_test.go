@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,7 +17,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"path"
 
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/lib/dockerregistry/transfer"
@@ -25,7 +24,6 @@ import (
 	"github.com/uber/kraken/utils/dockerutil"
 
 	"github.com/docker/distribution/uuid"
-	"github.com/uber-go/tally"
 )
 
 const (
@@ -57,7 +55,7 @@ func newTestDriver() (*testDriver, func()) {
 }
 
 func (d *testDriver) setup() (*KrakenStorageDriver, testImageUploadBundle) {
-	sd := NewReadWriteStorageDriver(Config{}, d.cas, d.transferer, tally.NoopScope)
+	sd := NewReadWriteStorageDriver(Config{}, d.cas, d.transferer, DefaultVerificationFunc)
 
 	// Create upload
 	uploadUUID := uuid.Generate().String()
@@ -69,14 +67,21 @@ func (d *testDriver) setup() (*KrakenStorageDriver, testImageUploadBundle) {
 	if err := sd.uploads.putContent(path, _hashstates, []byte(hashStateContent)); err != nil {
 		log.Panic(err)
 	}
-	path = genUploadDataPath(uploadUUID)
 
 	writer, err := d.cas.GetUploadFileReadWriter(uploadUUID)
 	if err != nil {
 		log.Panic(err)
 	}
-	defer writer.Close()
-	writer.Write([]byte(uploadContent))
+	defer func() {
+		err := writer.Close()
+		if err != nil {
+			log.Panic(err)
+		}
+	}()
+	_, err = writer.Write([]byte(uploadContent))
+	if err != nil {
+		log.Panic(err)
+	}
 
 	config := core.NewBlobFixture()
 	layer1 := core.NewBlobFixture()
@@ -146,17 +151,6 @@ func genManifestListPath(repo string) string {
 	return fmt.Sprintf("/docker/registry/v2/repositories/%s/_manifests/tags", repo)
 }
 
-func getShardedRelativePath(name string) string {
-	filePath := ""
-	for i := 0; i < 2 && i < len(name)/2; i++ {
-		// (1 byte = 2 char of file name assumming file name is in HEX)
-		dirName := name[i*2 : i*2+2]
-		filePath = path.Join(filePath, dirName)
-	}
-
-	return path.Join(filePath, name)
-}
-
 func contextFixture() context.Context {
-	return context.WithValue(context.Background(), "vars.name", "dummy")
+	return context.WithValue(context.Background(), "vars.name", "dummy") //nolint:staticcheck // Production code expects string key
 }

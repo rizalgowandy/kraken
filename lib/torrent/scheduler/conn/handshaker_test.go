@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -32,7 +32,9 @@ func TestHandshakerSetsConnFieldsProperly(t *testing.T) {
 
 	l1, err := net.Listen("tcp", "localhost:0")
 	require.NoError(err)
-	defer l1.Close()
+	t.Cleanup(func() {
+		require.NoError(l1.Close())
+	})
 
 	config := ConfigFixture()
 	namespace := core.TagFixture()
@@ -76,7 +78,7 @@ func TestHandshakerSetsConnFieldsProperly(t *testing.T) {
 	go func() {
 		defer wg.Done()
 
-		r, err := h2.Initialize(h1.peerID, l1.Addr().String(), info, emptyRemoteBitfields, namespace)
+		r, err := h2.Initialize(h1.peerID, false, l1.Addr().String(), info, emptyRemoteBitfields, namespace)
 		require.NoError(err)
 		require.Equal(h1.peerID, r.Conn.PeerID())
 		require.Equal(info.InfoHash(), r.Conn.InfoHash())
@@ -93,7 +95,9 @@ func TestHandshakerHandlesEmptyBitfield(t *testing.T) {
 
 	l1, err := net.Listen("tcp", "localhost:0")
 	require.NoError(err)
-	defer l1.Close()
+	t.Cleanup(func() {
+		require.NoError(l1.Close())
+	})
 
 	config := ConfigFixture()
 	h1 := HandshakerFixture(config)

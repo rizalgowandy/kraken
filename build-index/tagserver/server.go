@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,6 +14,7 @@
 package tagserver
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -44,6 +45,11 @@ import (
 	"github.com/go-chi/chi"
 	chimiddleware "github.com/go-chi/chi/middleware"
 	"github.com/uber-go/tally"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Server provides tag operations for the build-index.
@@ -63,6 +69,8 @@ type Server struct {
 
 	// For checking if a tag has all dependent blobs.
 	depResolver tagtype.DependencyResolver
+
+	tracer trace.Tracer
 }
 
 // New creates a new Server.
@@ -77,8 +85,9 @@ func New(
 	remotes tagreplication.Remotes,
 	tagReplicationManager persistedretry.Manager,
 	provider tagclient.Provider,
-	depResolver tagtype.DependencyResolver) *Server {
-
+	depResolver tagtype.DependencyResolver,
+	tracer trace.Tracer,
+) *Server {
 	config = config.applyDefaults()
 
 	stats = stats.Tagged(map[string]string{
@@ -97,6 +106,7 @@ func New(
 		tagReplicationManager: tagReplicationManager,
 		provider:              provider,
 		depResolver:           depResolver,
+		tracer:                tracer,
 	}
 }
 
@@ -108,8 +118,13 @@ func (s *Server) Handler() http.Handler {
 	r.Use(middleware.LatencyTimer(s.stats))
 
 	r.Get("/health", handler.Wrap(s.healthHandler))
+	r.Get("/readiness", handler.Wrap(s.readinessCheckHandler))
+	tracingMiddleware := otelhttp.NewMiddleware("kraken-build-index",
+		otelhttp.WithTracerProvider(otel.GetTracerProvider()))
 
-	r.Put("/tags/{tag}/digest/{digest}", handler.Wrap(s.putTagHandler))
+	// Docker push endpoint
+	r.With(tracingMiddleware).Put("/tags/{tag}/digest/{digest}", handler.Wrap(s.putTagHandler))
+
 	r.Head("/tags/{tag}", handler.Wrap(s.hasTagHandler))
 	r.Get("/tags/{tag}", handler.Wrap(s.getTagHandler))
 
@@ -141,37 +156,103 @@ func (s *Server) ListenAndServe() error {
 }
 
 func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) error {
-	fmt.Fprintln(w, "OK")
+	_, err := fmt.Fprintln(w, "OK")
+	if err != nil {
+		log.With("error", err).Error("Health check write failed")
+		return handler.Errorf("write health check: %s", err)
+	}
+	return nil
+}
+
+func (s *Server) readinessCheckHandler(w http.ResponseWriter, r *http.Request) error {
+	err := s.backends.CheckReadiness()
+	if err != nil {
+		log.With("error", err).Error("Backends readiness check failed")
+		return handler.Errorf("not ready to serve traffic: %s", err).Status(http.StatusServiceUnavailable)
+	}
+	err = s.localOriginClient.CheckReadiness()
+	if err != nil {
+		log.With("error", err).Error("Origin readiness check failed")
+		return handler.Errorf("not ready to serve traffic: %s", err).Status(http.StatusServiceUnavailable)
+	}
+	_, err = fmt.Fprintln(w, "OK")
+	if err != nil {
+		log.With("error", err).Error("Readiness check write failed")
+		return handler.Errorf("write readiness check: %s", err)
+	}
 	return nil
 }
 
 func (s *Server) putTagHandler(w http.ResponseWriter, r *http.Request) error {
+	ctx, span := s.tracer.Start(r.Context(), "build_index.put_tag",
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(
+			attribute.String("component", "build_index"),
+			attribute.String("operation", "put_tag"),
+		),
+	)
+	defer span.End()
+
 	tag, err := httputil.ParseParam(r, "tag")
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "parse tag failed")
 		return err
 	}
 	d, err := httputil.ParseDigest(r, "digest")
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "parse digest failed")
 		return err
 	}
 	replicate, err := strconv.ParseBool(httputil.GetQueryArg(r, "replicate", "false"))
 	if err != nil {
-		return handler.Errorf("parse query arg `replicate`: %s", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "parse query arg replicate failed")
+		return fmt.Errorf("parse query arg `replicate`: %w", err)
 	}
+
+	span.SetAttributes(
+		attribute.String("tag", tag),
+		attribute.String("digest", d.String()),
+		attribute.Bool("replicate", replicate),
+	)
+
+	log.WithTraceContext(ctx).With("tag", tag, "digest", d.String(), "replicate", replicate).Info("Putting tag")
 
 	deps, err := s.depResolver.Resolve(tag, d)
 	if err != nil {
-		return fmt.Errorf("resolve dependencies: %s", err)
+		log.WithTraceContext(ctx).With("tag", tag, "digest", d.String(), "error", err).Error("Failed to resolve dependencies")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "resolve dependencies failed")
+		return fmt.Errorf("resolve dependencies: %w", err)
 	}
-	if err := s.putTag(tag, d, deps); err != nil {
+
+	span.SetAttributes(attribute.Int("dependency_count", len(deps)))
+	log.WithTraceContext(ctx).With("tag", tag, "digest", d.String(), "dependency_count", len(deps)).Debug("Resolved dependencies")
+
+	if err := s.putTag(ctx, tag, d, deps); err != nil {
+		log.WithTraceContext(ctx).With("tag", tag, "digest", d.String(), "error", err).Error("Failed to put tag")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "put tag failed")
 		return err
 	}
 
+	log.WithTraceContext(ctx).With("tag", tag, "digest", d.String()).Info("Successfully put tag")
+
 	if replicate {
-		if err := s.replicateTag(tag, d, deps); err != nil {
+		log.WithTraceContext(ctx).With("tag", tag, "digest", d.String()).Info("Starting tag replication")
+		if err := s.replicateTag(ctx, tag, d, deps); err != nil {
+			log.WithTraceContext(ctx).With("tag", tag, "digest", d.String(), "error", err).Error("Failed to replicate tag")
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "replicate tag failed")
 			return err
 		}
+		log.WithTraceContext(ctx).With("tag", tag, "digest", d.String()).Info("Successfully replicated tag")
 	}
+
+	span.SetStatus(codes.Ok, "tag put successfully")
+	span.SetAttributes(attribute.Bool("success", true))
 	w.WriteHeader(http.StatusOK)
 	return nil
 }
@@ -192,9 +273,15 @@ func (s *Server) duplicatePutTagHandler(w http.ResponseWriter, r *http.Request) 
 	}
 	delay := req.Delay
 
-	if err := s.store.Put(tag, d, delay); err != nil {
+	ctx := r.Context()
+	log.WithTraceContext(ctx).With("tag", tag, "digest", d.String(), "delay", delay).Debug("Received duplicate put request from neighbor")
+
+	if err := s.store.Put(ctx, tag, d, delay); err != nil {
+		log.WithTraceContext(ctx).With("tag", tag, "digest", d.String(), "delay", delay, "error", err).Error("Failed to store tag from duplicate put")
 		return handler.Errorf("storage: %s", err)
 	}
+
+	log.WithTraceContext(ctx).With("tag", tag, "digest", d.String(), "delay", delay).Info("Successfully stored tag from duplicate put")
 
 	w.WriteHeader(http.StatusOK)
 	return nil
@@ -206,15 +293,21 @@ func (s *Server) getTagHandler(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
+	log.With("tag", tag).Debug("Getting tag")
+
 	d, err := s.store.Get(tag)
 	if err != nil {
 		if err == tagstore.ErrTagNotFound {
 			return handler.ErrorStatus(http.StatusNotFound)
 		}
+		log.With("tag", tag).Errorf("Failed to get tag from storage: %s", err)
 		return handler.Errorf("storage: %s", err)
 	}
 
+	log.With("tag", tag, "digest", d.String()).Debug("Successfully retrieved tag")
+
 	if _, err := io.WriteString(w, d.String()); err != nil {
+		log.With("tag", tag, "digest", d.String(), "error", err).Error("Failed to write digest")
 		return handler.Errorf("write digest: %s", err)
 	}
 	return nil
@@ -226,16 +319,23 @@ func (s *Server) hasTagHandler(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
+	log.With("tag", tag).Debug("Checking if tag exists")
+
 	client, err := s.backends.GetClient(tag)
 	if err != nil {
+		log.With("tag", tag).Errorf("Failed to get backend client: %s", err)
 		return handler.Errorf("backend manager: %s", err)
 	}
 	if _, err := client.Stat(tag, tag); err != nil {
 		if err == backenderrors.ErrBlobNotFound {
+			log.With("tag", tag).Debug("Tag does not exist in backend")
 			return handler.ErrorStatus(http.StatusNotFound)
 		}
+		log.With("tag", tag).Errorf("Failed to check tag existence: %s", err)
 		return err
 	}
+
+	log.With("tag", tag).Debug("Tag exists in backend")
 	return nil
 }
 
@@ -244,8 +344,11 @@ func (s *Server) hasTagHandler(w http.ResponseWriter, r *http.Request) error {
 func (s *Server) listHandler(w http.ResponseWriter, r *http.Request) error {
 	prefix := r.URL.Path[len("/list/"):]
 
+	log.With("prefix", prefix).Debug("Listing tags with prefix")
+
 	client, err := s.backends.GetClient(prefix)
 	if err != nil {
+		log.With("prefix", prefix, "error", err).Error("Failed to get backend client for list")
 		return handler.Errorf("backend manager: %s", err)
 	}
 
@@ -256,8 +359,11 @@ func (s *Server) listHandler(w http.ResponseWriter, r *http.Request) error {
 
 	result, err := client.List(prefix, opts...)
 	if err != nil {
+		log.With("prefix", prefix, "error", err).Error("Failed to list from backend")
 		return handler.Errorf("error listing from backend: %s", err)
 	}
+
+	log.With("prefix", prefix, "result_count", len(result.Names), "continuation_token", result.ContinuationToken).Debug("Successfully listed tags")
 
 	resp, err := buildPaginationResponse(r.URL, result.ContinuationToken,
 		result.Names)
@@ -279,8 +385,11 @@ func (s *Server) listRepositoryHandler(w http.ResponseWriter, r *http.Request) e
 		return err
 	}
 
+	log.With("repository", repo).Debug("Listing repository tags")
+
 	client, err := s.backends.GetClient(repo)
 	if err != nil {
+		log.With("repository", repo).Errorf("Failed to get backend client for repository list: %s", err)
 		return handler.Errorf("backend manager: %s", err)
 	}
 
@@ -291,6 +400,7 @@ func (s *Server) listRepositoryHandler(w http.ResponseWriter, r *http.Request) e
 
 	result, err := client.List(path.Join(repo, "_manifests/tags"), opts...)
 	if err != nil {
+		log.With("repository", repo).Errorf("Failed to list repository tags from backend: %s", err)
 		return handler.Errorf("error listing from backend: %s", err)
 	}
 
@@ -299,11 +409,13 @@ func (s *Server) listRepositoryHandler(w http.ResponseWriter, r *http.Request) e
 		// Strip repo prefix.
 		parts := strings.Split(name, ":")
 		if len(parts) != 2 {
-			log.With("name", name).Warn("Repo list skipping name, expected repo:tag format")
+			log.With("repository", repo, "name", name).Warn("Skipping invalid tag name format")
 			continue
 		}
 		tags = append(tags, parts[1])
 	}
+
+	log.With("repository", repo, "tag_count", len(tags), "continuation_token", result.ContinuationToken).Debug("Successfully listed repository tags")
 
 	resp, err := buildPaginationResponse(r.URL, result.ContinuationToken, tags)
 	if err != nil {
@@ -321,20 +433,35 @@ func (s *Server) replicateTagHandler(w http.ResponseWriter, r *http.Request) err
 		return err
 	}
 
+	log.With("tag", tag).Info("Received replicate tag request")
+
 	d, err := s.store.Get(tag)
 	if err != nil {
 		if err == tagstore.ErrTagNotFound {
+			log.With("tag", tag).Warn("Cannot replicate tag - not found in storage")
 			return handler.ErrorStatus(http.StatusNotFound)
 		}
+		log.With("tag", tag).Errorf("Failed to get tag for replication: %s", err)
 		return handler.Errorf("storage: %s", err)
 	}
+
+	log.With("tag", tag, "digest", d.String()).Debug("Retrieved tag for replication")
+
 	deps, err := s.depResolver.Resolve(tag, d)
 	if err != nil {
+		log.With("tag", tag, "digest", d.String()).Errorf("Failed to resolve dependencies for replication: %s", err)
 		return fmt.Errorf("resolve dependencies: %s", err)
 	}
-	if err := s.replicateTag(tag, d, deps); err != nil {
+
+	log.With("tag", tag, "digest", d.String(), "dependency_count", len(deps)).Debug("Resolved dependencies for replication")
+
+	if err := s.replicateTag(r.Context(), tag, d, deps); err != nil {
+		log.With("tag", tag, "digest", d.String()).Errorf("Failed to replicate tag: %s", err)
 		return err
 	}
+
+	log.With("tag", tag, "digest", d.String()).Info("Successfully initiated tag replication")
+
 	w.WriteHeader(http.StatusOK)
 	return nil
 }
@@ -346,21 +473,29 @@ func (s *Server) duplicateReplicateTagHandler(w http.ResponseWriter, r *http.Req
 	}
 	d, err := httputil.ParseDigest(r, "digest")
 	if err != nil {
-		return handler.Errorf("get dependency resolver: %s", err)
+		return handler.Errorf("parse digest: %s", err)
 	}
 	var req tagclient.DuplicateReplicateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		return handler.Errorf("decode body: %s", err)
 	}
 
+	log.With("tag", tag, "digest", d.String(), "delay", req.Delay, "dependency_count", len(req.Dependencies)).Debug("Received duplicate replicate request from neighbor")
+
 	destinations := s.remotes.Match(tag)
+
+	log.With("tag", tag, "digest", d.String(), "destination_count", len(destinations)).Debug("Matched remote destinations for duplicate replicate")
 
 	for _, dest := range destinations {
 		task := tagreplication.NewTask(tag, d, req.Dependencies, dest, req.Delay)
 		if err := s.tagReplicationManager.Add(task); err != nil {
+			log.With("tag", tag, "digest", d.String(), "destination", dest, "delay", req.Delay).Errorf("Failed to add replicate task from duplicate: %s", err)
 			return handler.Errorf("add replicate task: %s", err)
 		}
+		log.With("tag", tag, "digest", d.String(), "destination", dest).Debug("Added replicate task from duplicate")
 	}
+
+	log.With("tag", tag, "digest", d.String(), "tasks_added", len(destinations)).Info("Successfully processed duplicate replicate request")
 
 	return nil
 }
@@ -372,20 +507,29 @@ func (s *Server) getOriginHandler(w http.ResponseWriter, r *http.Request) error 
 	return nil
 }
 
-func (s *Server) putTag(tag string, d core.Digest, deps core.DigestList) error {
+func (s *Server) putTag(ctx context.Context, tag string, d core.Digest, deps core.DigestList) error {
+	log.WithTraceContext(ctx).With("tag", tag, "digest", d.String(), "dependency_count", len(deps)).Debug("Validating tag dependencies")
+
 	for _, dep := range deps {
 		if _, err := s.localOriginClient.Stat(tag, dep); err == blobclient.ErrBlobNotFound {
-			return handler.Errorf("cannot upload tag, missing dependency %s", dep)
+			return fmt.Errorf("cannot upload tag, missing dependency %s", dep)
 		} else if err != nil {
-			return handler.Errorf("check blob: %s", err)
+			return fmt.Errorf("check blob: %w", err)
 		}
 	}
 
-	if err := s.store.Put(tag, d, 0); err != nil {
-		return handler.Errorf("storage: %s", err)
+	log.WithTraceContext(ctx).With("tag", tag, "digest", d.String()).Debug("All dependencies validated successfully")
+
+	if err := s.store.Put(ctx, tag, d, 0); err != nil {
+		return fmt.Errorf("storage: %w", err)
 	}
 
+	log.WithTraceContext(ctx).With("tag", tag, "digest", d.String()).Info("Tag stored locally")
+
 	neighbors := s.neighbors.Resolve()
+	neighborCount := len(neighbors)
+
+	log.WithTraceContext(ctx).With("tag", tag, "digest", d.String(), "neighbor_count", neighborCount).Debug("Starting neighbor replication")
 
 	var delay time.Duration
 	var successes int
@@ -393,31 +537,46 @@ func (s *Server) putTag(tag string, d core.Digest, deps core.DigestList) error {
 		delay += s.config.DuplicatePutStagger
 		client := s.provider.Provide(addr)
 		if err := client.DuplicatePut(tag, d, delay); err != nil {
-			log.Errorf("Error duplicating put task to %s: %s", addr, err)
+			log.WithTraceContext(ctx).With("tag", tag, "digest", d.String(), "neighbor", addr, "delay", delay, "error", err).Error("Failed to duplicate put to neighbor")
 		} else {
 			successes++
+			log.WithTraceContext(ctx).With("tag", tag, "digest", d.String(), "neighbor", addr, "delay", delay).Debug("Successfully duplicated put to neighbor")
 		}
 	}
+
+	log.WithTraceContext(ctx).With("tag", tag, "digest", d.String(), "total_neighbors", neighborCount, "successful_neighbors", successes, "failed_neighbors", neighborCount-successes).Info("Completed neighbor replication")
+
 	if len(neighbors) != 0 && successes == 0 {
 		s.stats.Counter("duplicate_put_failures").Inc(1)
+		log.WithTraceContext(ctx).With("tag", tag, "digest", d.String(), "neighbor_count", neighborCount).Error("All neighbor replications failed")
 	}
 	return nil
 }
 
-func (s *Server) replicateTag(tag string, d core.Digest, deps core.DigestList) error {
+func (s *Server) replicateTag(ctx context.Context, tag string, d core.Digest, deps core.DigestList) error {
 	destinations := s.remotes.Match(tag)
+
+	log.WithTraceContext(ctx).With("tag", tag, "digest", d.String(), "destination_count", len(destinations)).Debug("Checking remote destinations for tag replication")
+
 	if len(destinations) == 0 {
+		log.WithTraceContext(ctx).With("tag", tag, "digest", d.String()).Debug("No remote destinations configured for tag")
 		return nil
 	}
+
+	log.WithTraceContext(ctx).With("tag", tag, "digest", d.String(), "destinations", destinations).Info("Adding remote replication tasks")
 
 	for _, dest := range destinations {
 		task := tagreplication.NewTask(tag, d, deps, dest, 0)
 		if err := s.tagReplicationManager.Add(task); err != nil {
-			return handler.Errorf("add replicate task: %s", err)
+			return fmt.Errorf("add replicate task: %w", err)
 		}
+		log.WithTraceContext(ctx).With("tag", tag, "digest", d.String(), "destination", dest).Debug("Added remote replication task")
 	}
 
 	neighbors := s.neighbors.Resolve()
+	neighborCount := len(neighbors)
+
+	log.WithTraceContext(ctx).With("tag", tag, "digest", d.String(), "neighbor_count", neighborCount).Debug("Notifying neighbors about remote replication")
 
 	var delay time.Duration
 	var successes int
@@ -425,13 +584,18 @@ func (s *Server) replicateTag(tag string, d core.Digest, deps core.DigestList) e
 		delay += s.config.DuplicateReplicateStagger
 		client := s.provider.Provide(addr)
 		if err := client.DuplicateReplicate(tag, d, deps, delay); err != nil {
-			log.Errorf("Error duplicating replicate task to %s: %s", addr, err)
+			log.WithTraceContext(ctx).With("tag", tag, "digest", d.String(), "neighbor", addr, "delay", delay).Errorf("Failed to notify neighbor about replication: %s", err)
 		} else {
 			successes++
+			log.WithTraceContext(ctx).With("tag", tag, "digest", d.String(), "neighbor", addr, "delay", delay).Debug("Successfully notified neighbor about replication")
 		}
 	}
+
+	log.WithTraceContext(ctx).With("tag", tag, "digest", d.String(), "remote_destinations", len(destinations), "notified_neighbors", successes, "failed_neighbors", neighborCount-successes).Info("Completed remote replication setup")
+
 	if len(neighbors) != 0 && successes == 0 {
 		s.stats.Counter("duplicate_replicate_failures").Inc(1)
+		log.WithTraceContext(ctx).With("tag", tag, "digest", d.String(), "neighbor_count", neighborCount).Error("All neighbor replication notifications failed")
 	}
 	return nil
 }
@@ -472,8 +636,8 @@ func buildPaginationOptions(u *url.URL) ([]backend.ListOption, error) {
 }
 
 func buildPaginationResponse(u *url.URL, continuationToken string,
-	result []string) (*tagmodels.ListResponse, error) {
-
+	result []string,
+) (*tagmodels.ListResponse, error) {
 	nextUrlString := ""
 	if continuationToken != "" {
 		// Deep copy url.

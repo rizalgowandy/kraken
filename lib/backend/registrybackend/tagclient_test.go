@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -26,6 +26,7 @@ import (
 	"github.com/uber-go/tally"
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/lib/backend/backenderrors"
+	"github.com/uber/kraken/utils/closers"
 	"github.com/uber/kraken/utils/dockerutil"
 	"github.com/uber/kraken/utils/testutil"
 )
@@ -61,6 +62,7 @@ func TestTagDownloadSuccess(t *testing.T) {
 	config := newTestConfig(addr)
 	client, err := NewTagClient(config, tally.NoopScope)
 	require.NoError(err)
+	defer closers.Close(client)
 
 	info, err := client.Stat(tag, tag)
 	require.NoError(err)
@@ -68,7 +70,7 @@ func TestTagDownloadSuccess(t *testing.T) {
 
 	var b bytes.Buffer
 	require.NoError(client.Download(tag, tag, &b))
-	require.Equal(digest.String(), string(b.Bytes()))
+	require.Equal(digest.String(), b.String())
 }
 
 func TestTagDownloadFileNotFound(t *testing.T) {
@@ -80,7 +82,8 @@ func TestTagDownloadFileNotFound(t *testing.T) {
 	r := chi.NewRouter()
 	r.Get(fmt.Sprintf("/v2/%s/manifests/{tag}", namespace), func(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte("file not found"))
+		_, err := w.Write([]byte("file not found"))
+		require.NoError(err)
 	})
 	r.Head(fmt.Sprintf("/v2/%s/manifests/{tag}", namespace), func(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -91,6 +94,7 @@ func TestTagDownloadFileNotFound(t *testing.T) {
 	config := newTestConfig(addr)
 	client, err := NewTagClient(config, tally.NoopScope)
 	require.NoError(err)
+	defer closers.Close(client)
 
 	_, err = client.Stat(tag, tag)
 	require.Equal(backenderrors.ErrBlobNotFound, err)

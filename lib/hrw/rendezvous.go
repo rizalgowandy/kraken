@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -23,14 +23,6 @@ import (
 
 	"github.com/spaolacci/murmur3"
 )
-
-// min between two integers.
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
 
 // HashFactory is a function object for Hash.New() constructor.
 type HashFactory func() hash.Hash
@@ -156,9 +148,8 @@ func (rhn *RendezvousHashNode) Score(key string) float64 {
 		return math.NaN()
 	}
 
-	hashBytes := make([]byte, len(keyBytes)+len(rhn.Label))
 	// Add node's seed to a key string
-	hashBytes = append(keyBytes, []byte(rhn.Label)...)
+	hashBytes := append(keyBytes, []byte(rhn.Label)...)
 
 	hasher.Write(hashBytes)
 	score := rhn.RHash.ScoreFunc(hasher.Sum(nil), rhn.RHash.MaxHashValue, hasher)

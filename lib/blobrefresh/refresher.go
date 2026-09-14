@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -22,6 +22,7 @@ import (
 	"github.com/uber/kraken/lib/backend"
 	"github.com/uber/kraken/lib/backend/backenderrors"
 	"github.com/uber/kraken/lib/metainfogen"
+	"github.com/uber/kraken/lib/observability"
 	"github.com/uber/kraken/lib/store"
 	"github.com/uber/kraken/utils/dedup"
 	"github.com/uber/kraken/utils/log"
@@ -68,7 +69,10 @@ func New(
 		"module": "blobrefresh",
 	})
 
-	requests := dedup.NewRequestCache(dedup.RequestCacheConfig{}, clock.New())
+	requestsStats := stats.Tagged(map[string]string{
+		"request_type": "blobrefresh",
+	})
+	requests := dedup.NewRequestCache(dedup.RequestCacheConfig{}, clock.New(), requestsStats)
 	requests.SetNotFound(func(err error) bool { return err == backenderrors.ErrBlobNotFound })
 
 	return &Refresher{config, stats, requests, cas, backends, metaInfoGenerator}
@@ -100,23 +104,21 @@ func (r *Refresher) Refresh(namespace string, d core.Digest, hooks ...PostHook) 
 		return fmt.Errorf("%s blob exceeds size limit of %s", size, r.config.SizeLimit)
 	}
 
-	id := namespace + ":" + d.Hex()
+	id := d.Hex()
 	err = r.requests.Start(id, func() error {
 		start := time.Now()
-		if err := r.download(client, namespace, d); err != nil {
+		pieceLength := r.metaInfoGenerator.GetPieceLength(int64(size))
+		err := r.download(client, namespace, d, size.Bytes(), pieceLength)
+		if err != nil {
 			return err
 		}
-		t := time.Since(start)
-		r.stats.Timer("download_remote_blob").Record(t)
+		downloadLatency := time.Since(start)
+		observability.EmitDownloadPerformance(r.stats, observability.REMOTE_DOWNLOAD, info.Size, downloadLatency)
 		log.With(
 			"namespace", namespace,
 			"name", d.Hex(),
-			"download_time", t).Info("Downloaded remote blob")
-
-		if err := r.metaInfoGenerator.Generate(d); err != nil {
-			return fmt.Errorf("generate metainfo: %s", err)
-		}
-		r.stats.Counter("downloads").Inc(1)
+			"blob_size", size.String(),
+			"download_time", downloadLatency).Info("Downloaded remote blob")
 		for _, h := range hooks {
 			h.Run(d)
 		}
@@ -134,9 +136,9 @@ func (r *Refresher) Refresh(namespace string, d core.Digest, hooks ...PostHook) 
 	}
 }
 
-func (r *Refresher) download(client backend.Client, namespace string, d core.Digest) error {
+func (r *Refresher) download(client backend.Client, namespace string, d core.Digest, size uint64, pieceLength int64) error {
 	name := d.Hex()
-	return r.cas.WriteCacheFile(name, func(w store.FileReadWriter) error {
+	return r.cas.WriteBlobToCacheWithMetaInfo(name, size, func(w store.FileReadWriter) error {
 		return client.Download(namespace, name, w)
-	})
+	}, pieceLength)
 }

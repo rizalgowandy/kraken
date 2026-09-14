@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,10 +17,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/url"
 
 	"github.com/uber/kraken/core"
+	"github.com/uber/kraken/utils/closers"
 	"github.com/uber/kraken/utils/httputil"
 )
 
@@ -55,8 +55,8 @@ func (c *HTTPClient) GetTag(tag string) (core.Digest, error) {
 		}
 		return core.Digest{}, err
 	}
-	defer resp.Body.Close()
-	b, err := ioutil.ReadAll(resp.Body)
+	defer closers.Close(resp.Body)
+	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return core.Digest{}, fmt.Errorf("read body: %s", err)
 	}

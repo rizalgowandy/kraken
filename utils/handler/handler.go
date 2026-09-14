@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -90,12 +90,19 @@ func Wrap(h ErrHandler) http.HandlerFunc {
 				errMsg = e.Error()
 			}
 			w.WriteHeader(status)
-			w.Write([]byte(errMsg))
+			if _, err := w.Write([]byte(errMsg)); err != nil {
+				log.With("error", err).Error("Failed to write error response")
+			}
 		} else {
 			status = http.StatusOK
 		}
 		if status >= 400 && status != 404 {
-			log.Infof("%d %s %s %s", status, r.Method, r.URL.Path, errMsg)
+			log.With(
+				"status", status,
+				"method", r.Method,
+				"path", r.URL.Path,
+				"error", errMsg,
+			).Info("Handler returned error response")
 		}
 	}
 }

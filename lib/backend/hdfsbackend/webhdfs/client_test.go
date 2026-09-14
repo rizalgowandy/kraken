@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,16 +17,18 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"os"
 	"path"
 	"testing"
 
 	"github.com/uber/kraken/lib/backend/backenderrors"
+	"github.com/uber/kraken/utils/log"
 	"github.com/uber/kraken/utils/randutil"
 	"github.com/uber/kraken/utils/rwutil"
 	"github.com/uber/kraken/utils/testutil"
+	"go.uber.org/zap"
 
 	"github.com/go-chi/chi"
 	"github.com/stretchr/testify/require"
@@ -57,13 +59,16 @@ func redirectToDataNode(w http.ResponseWriter, r *http.Request) {
 func writeResponse(status int, body []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(status)
-		w.Write(body)
+		_, err := w.Write(body)
+		if err != nil {
+			log.Desugar().Error("failed to write response", zap.Error(err))
+		}
 	}
 }
 
 func checkBody(t *testing.T, expected []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		b, err := ioutil.ReadAll(r.Body)
+		b, err := io.ReadAll(r.Body)
 		require.NoError(t, err)
 		require.Equal(t, string(expected), string(b))
 		w.WriteHeader(http.StatusCreated)
@@ -141,9 +146,9 @@ func TestClientOpenErrBlobNotFound(t *testing.T) {
 
 	client := newClient(addr)
 
-	f, err := ioutil.TempFile("", "hdfs3test")
+	f, err := os.CreateTemp("", "hdfs3test")
 	require.NoError(err)
-	defer os.Remove(f.Name())
+	t.Cleanup(func() { require.NoError(os.Remove(f.Name())) })
 
 	var b bytes.Buffer
 	require.Equal(backenderrors.ErrBlobNotFound, client.Open(_testFile, &b))

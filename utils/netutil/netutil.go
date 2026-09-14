@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -22,14 +22,7 @@ import (
 
 // _supportedInterfaces is an ordered list of ip interfaces from which
 // host ip is determined.
-var _supportedInterfaces = []string{"eth0", "ib0", "eth2"}
-
-func min(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
-	}
-	return b
-}
+var _supportedInterfaces = []string{"eth0", "ib0", "eth1", "eth2"}
 
 // WithRetry executes f maxRetries times until it returns non-nil error, sleeping
 // for the given delay between retries with exponential backoff until maxDelay is

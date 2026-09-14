@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,6 +19,8 @@ import (
 	"io"
 	"os"
 	"path"
+
+	"github.com/uber/kraken/utils/closers"
 )
 
 // IsEmpty returns true if directory dir is empty.
@@ -27,7 +29,7 @@ func IsEmpty(dir string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer f.Close()
+	defer closers.Close(f)
 
 	_, err = f.Readdirnames(1)
 	if err == io.EOF {
@@ -60,7 +62,9 @@ func EnsureFilePresent(filepath string, perm os.FileMode) error {
 		if err != nil {
 			return fmt.Errorf("create: %s", err)
 		}
-		f.Close()
+		if err := f.Close(); err != nil {
+			return fmt.Errorf("close: %s", err)
+		}
 	} else if err != nil {
 		return fmt.Errorf("stat: %s", err)
 	}

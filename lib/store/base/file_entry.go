@@ -17,14 +17,16 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/uber/kraken/lib/store/metadata"
+	"github.com/uber/kraken/utils/closers"
+	"github.com/uber/kraken/utils/log"
 	"github.com/uber/kraken/utils/stringset"
+	"go.uber.org/zap"
 )
 
 // FileEntry errors.
@@ -127,7 +129,7 @@ func (f *localFileEntryFactory) ListNames(state FileState) ([]string, error) {
 
 	var readNames func(string) error
 	readNames = func(dir string) error {
-		infos, err := ioutil.ReadDir(dir)
+		infos, err := os.ReadDir(dir)
 		if err != nil {
 			if os.IsNotExist(err) {
 				return nil
@@ -195,7 +197,7 @@ func (f *casFileEntryFactory) ListNames(state FileState) ([]string, error) {
 
 	var readNames func(string, int) error
 	readNames = func(dir string, depth int) error {
-		infos, err := ioutil.ReadDir(dir)
+		infos, err := os.ReadDir(dir)
 		if err != nil {
 			return err
 		}
@@ -289,13 +291,16 @@ func (entry *localFileEntry) Create(targetState FileState, size int64) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer closers.Close(f)
 
 	// Change size.
 	err = f.Truncate(size)
 	if err != nil {
 		// Try to delete file.
-		os.RemoveAll(filepath.Dir(targetPath))
+		removeErr := os.RemoveAll(filepath.Dir(targetPath))
+		if removeErr != nil {
+			log.Desugar().Error("failed to remove file after truncate error", zap.Error(err))
+		}
 		return err
 	}
 
@@ -311,7 +316,7 @@ func (entry *localFileEntry) Reload() error {
 	}
 
 	// Load metadata.
-	files, err := ioutil.ReadDir(filepath.Dir(entry.GetPath()))
+	files, err := os.ReadDir(filepath.Dir(entry.GetPath()))
 	if err != nil {
 		return err
 	}
@@ -322,7 +327,10 @@ func (entry *localFileEntry) Reload() error {
 			md := metadata.CreateFromSuffix(currFile.Name())
 			if md != nil {
 				// Add metadata
-				entry.AddMetadata(md)
+				err = entry.AddMetadata(md)
+				if err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -382,7 +390,7 @@ func (entry *localFileEntry) Move(targetState FileState) error {
 		if md.Movable() {
 			sourceMetadataPath := entry.getMetadataPath(md)
 			targetMetadataPath := filepath.Join(filepath.Dir(targetPath), md.GetSuffix())
-			bytes, err := ioutil.ReadFile(sourceMetadataPath)
+			bytes, err := os.ReadFile(sourceMetadataPath)
 			if err != nil {
 				return err
 			}
@@ -487,7 +495,7 @@ func (entry *localFileEntry) AddMetadata(md metadata.Metadata) error {
 // GetMetadata reads and unmarshals metadata into md.
 func (entry *localFileEntry) GetMetadata(md metadata.Metadata) error {
 	filePath := entry.getMetadataPath(md)
-	b, err := ioutil.ReadFile(filePath)
+	b, err := os.ReadFile(filePath)
 	if err != nil {
 		return err
 	}
@@ -519,13 +527,13 @@ func (entry *localFileEntry) SetMetadataAt(
 	if err != nil {
 		return false, err
 	}
-	defer f.Close()
+	defer closers.Close(f)
 
 	prev := make([]byte, len(b))
 	if _, err := f.ReadAt(prev, offset); err != nil {
 		return false, err
 	}
-	if bytes.Compare(prev, b) == 0 {
+	if bytes.Equal(prev, b) {
 		return false, nil
 	}
 	if _, err := f.WriteAt(b, offset); err != nil {
@@ -591,7 +599,7 @@ func compareAndWriteFile(filePath string, b []byte) (bool, error) {
 			return false, err
 		}
 
-		if err := ioutil.WriteFile(filePath, b, 0775); err != nil {
+		if err := os.WriteFile(filePath, b, 0775); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -601,14 +609,14 @@ func compareAndWriteFile(filePath string, b []byte) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer f.Close()
+	defer closers.Close(f)
 
 	// Compare with existing data, overwrite if different.
 	buf := make([]byte, int(fs.Size()))
 	if _, err := f.Read(buf); err != nil {
 		return false, err
 	}
-	if bytes.Compare(buf, b) == 0 {
+	if bytes.Equal(buf, b) {
 		return false, nil
 	}
 

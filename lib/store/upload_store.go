@@ -20,6 +20,7 @@ import (
 	"github.com/andres-erbsen/clock"
 	"github.com/uber/kraken/lib/store/base"
 	"github.com/uber/kraken/lib/store/metadata"
+	"github.com/uber/kraken/utils/log"
 )
 
 // uploadStore provides basic upload file operations. Intended to be embedded
@@ -34,7 +35,9 @@ type uploadStore struct {
 
 func newUploadStore(dir string, readPartSize, writePartSize int) (*uploadStore, error) {
 	// Always wipe upload directory on startup.
-	os.RemoveAll(dir)
+	if err := os.RemoveAll(dir); err != nil {
+		log.Errorf("Error removing upload directory: %s", err)
+	}
 
 	if err := os.MkdirAll(dir, 0775); err != nil {
 		return nil, fmt.Errorf("mkdir: %s", err)
@@ -75,6 +78,16 @@ func (s *uploadStore) RangeUploadMetadata(name string, f func(metadata.Metadata)
 
 func (s *uploadStore) DeleteUploadFile(name string) error {
 	return s.newFileOp().DeleteFile(name)
+}
+
+// deferDeleteUploadFile returns a deferred function that deletes an upload file
+// and logs any errors that occur during deletion.
+func (s *uploadStore) deferDeleteUploadFile(uploadName string) func() {
+	return func() {
+		if err := s.DeleteUploadFile(uploadName); err != nil {
+			log.With("upload_name", uploadName).Debugf("Failed to delete upload file: %s", err)
+		}
+	}
 }
 
 func (s *uploadStore) newFileOp() base.FileOp {

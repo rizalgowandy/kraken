@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,14 +17,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/uber/kraken/core"
 	"github.com/andres-erbsen/clock"
+	"github.com/uber/kraken/core"
 	"github.com/willf/bitset"
 )
 
 // peer consolidates bookeeping for a remote peer.
 type peer struct {
-	id core.PeerID
+	id       core.PeerID
+	isOrigin bool
 
 	// Tracks the pieces which the remote peer has.
 	bitfield *syncBitfield
@@ -43,6 +44,7 @@ type peer struct {
 
 func newPeer(
 	peerID core.PeerID,
+	isOrigin bool,
 	b *bitset.BitSet,
 	messages Messages,
 	clk clock.Clock,
@@ -50,6 +52,7 @@ func newPeer(
 
 	return &peer{
 		id:       peerID,
+		isOrigin: isOrigin,
 		bitfield: newSyncBitfield(b),
 		messages: messages,
 		clk:      clk,
@@ -92,9 +95,9 @@ func (p *peer) touchLastPieceSent() {
 // peerStats wraps stats collected for a given peer.
 type peerStats struct {
 	mu                    sync.Mutex
-	pieceRequestsSent       int // Pieces we requested from the peer.
-	pieceRequestsReceived   int // Pieces the peer requested from us.
-	piecesSent              int // Pieces we sent to the peer.
+	pieceRequestsSent     int // Pieces we requested from the peer.
+	pieceRequestsReceived int // Pieces the peer requested from us.
+	piecesSent            int // Pieces we sent to the peer.
 
 	// Pieces we received from the peer that we didn't already have.
 	goodPiecesReceived int

@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -20,6 +20,8 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/uber/kraken/utils/closers"
+
 	"github.com/uber-go/tally"
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/lib/backend"
@@ -27,6 +29,7 @@ import (
 	"github.com/uber/kraken/lib/backend/registrybackend/security"
 	"github.com/uber/kraken/utils/httputil"
 	"github.com/uber/kraken/utils/log"
+	"go.uber.org/zap"
 	yaml "gopkg.in/yaml.v2"
 )
 
@@ -39,7 +42,7 @@ func init() {
 type blobClientFactory struct{}
 
 func (f *blobClientFactory) Create(
-	confRaw interface{}, masterAuthConfig backend.AuthConfig, stats tally.Scope) (backend.Client, error) {
+	confRaw interface{}, masterAuthConfig backend.AuthConfig, stats tally.Scope, _ *zap.SugaredLogger) (backend.Client, error) {
 
 	confBytes, err := yaml.Marshal(confRaw)
 	if err != nil {
@@ -144,7 +147,7 @@ func (c *BlobClient) downloadHelper(namespace, name, query string, dst io.Writer
 		}
 		return fmt.Errorf("get blob: %s", err)
 	}
-	defer resp.Body.Close()
+	defer closers.Close(resp.Body)
 
 	if _, err := io.Copy(dst, resp.Body); err != nil {
 		return fmt.Errorf("copy: %s", err)
@@ -160,4 +163,9 @@ func (c *BlobClient) Upload(namespace, name string, src io.Reader) error {
 // List is not supported for blobs.
 func (c *BlobClient) List(prefix string, opts ...backend.ListOption) (*backend.ListResult, error) {
 	return nil, errors.New("not supported")
+}
+
+// Close is noop as no resources to close
+func (c *BlobClient) Close() error {
+	return nil
 }

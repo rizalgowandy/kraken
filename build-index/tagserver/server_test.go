@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,14 +14,19 @@
 package tagserver
 
 import (
+	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/golang/mock/gomock"
+	"github.com/stretchr/testify/require"
+	"github.com/uber-go/tally"
 	"github.com/uber/kraken/build-index/tagclient"
 	"github.com/uber/kraken/build-index/tagstore"
 	"github.com/uber/kraken/core"
@@ -30,18 +35,15 @@ import (
 	"github.com/uber/kraken/lib/healthcheck"
 	"github.com/uber/kraken/lib/hostlist"
 	"github.com/uber/kraken/lib/persistedretry/tagreplication"
-	"github.com/uber/kraken/mocks/build-index/tagclient"
-	"github.com/uber/kraken/mocks/build-index/tagstore"
-	"github.com/uber/kraken/mocks/build-index/tagtype"
-	"github.com/uber/kraken/mocks/lib/backend"
-	"github.com/uber/kraken/mocks/lib/persistedretry"
-	"github.com/uber/kraken/mocks/origin/blobclient"
+	mocktagclient "github.com/uber/kraken/mocks/build-index/tagclient"
+	mocktagstore "github.com/uber/kraken/mocks/build-index/tagstore"
+	mocktagtype "github.com/uber/kraken/mocks/build-index/tagtype"
+	mockbackend "github.com/uber/kraken/mocks/lib/backend"
+	mockpersistedretry "github.com/uber/kraken/mocks/lib/persistedretry"
+	mockblobclient "github.com/uber/kraken/mocks/origin/blobclient"
 	"github.com/uber/kraken/utils/httputil"
 	"github.com/uber/kraken/utils/testutil"
-
-	"github.com/golang/mock/gomock"
-	"github.com/stretchr/testify/require"
-	"github.com/uber-go/tally"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 const (
@@ -76,7 +78,7 @@ func newServerMocks(t *testing.T) (*serverMocks, func()) {
 
 	backends := backend.ManagerFixture()
 	backendClient := mockbackend.NewMockClient(ctrl)
-	require.NoError(t, backends.Register(_testNamespace, backendClient))
+	require.NoError(t, backends.Register(_testNamespace, backendClient, false))
 
 	remotes, err := tagreplication.RemotesConfig{
 		_testRemote: []string{_testNamespace},
@@ -124,7 +126,8 @@ func (m *serverMocks) handler() http.Handler {
 		m.remotes,
 		m.tagReplicationManager,
 		m.provider,
-		m.depResolver).Handler()
+		m.depResolver,
+		noop.NewTracerProvider().Tracer("test")).Handler()
 }
 
 func newClusterClient(addr string) tagclient.Client {
@@ -142,11 +145,73 @@ func TestHealth(t *testing.T) {
 
 	resp, err := httputil.Get(
 		fmt.Sprintf("http://%s/health", addr))
-	defer resp.Body.Close()
 	require.NoError(err)
-	b, err := ioutil.ReadAll(resp.Body)
+	t.Cleanup(func() { require.NoError(resp.Body.Close()) })
+	b, err := io.ReadAll(resp.Body)
 	require.NoError(err)
 	require.Equal("OK\n", string(b))
+}
+
+func TestCheckReadiness(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		statErr   error
+		originErr error
+		wantErr   string
+	}{
+		{
+			name:      "success",
+			statErr:   nil,
+			originErr: nil,
+			wantErr:   "",
+		},
+		{
+			name:      "failure, 503 (only Stat fails)",
+			statErr:   errors.New("backend storage error"),
+			originErr: nil,
+			wantErr:   "build index not ready: GET http://{address}/readiness 503: not ready to serve traffic: backend for namespace 'foo-bar/*' not ready: backend storage error",
+		},
+		{
+			name:      "failure, 503 (only origin fails)",
+			statErr:   nil,
+			originErr: errors.New("origin error"),
+			wantErr:   "build index not ready: GET http://{address}/readiness 503: not ready to serve traffic: origin error",
+		},
+		{
+			name:      "failure, 503 (both fail)",
+			statErr:   errors.New("backend storage error"),
+			originErr: errors.New("origin error"),
+			wantErr:   "build index not ready: GET http://{address}/readiness 503: not ready to serve traffic: backend for namespace 'foo-bar/*' not ready: backend storage error",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require := require.New(t)
+
+			mocks, cleanup := newServerMocks(t)
+			defer cleanup()
+
+			addr, stop := testutil.StartServer(mocks.handler())
+			defer stop()
+
+			client := newClusterClient(addr)
+			backendClient := mockbackend.NewMockClient(mocks.ctrl)
+			require.NoError(mocks.backends.Register("foo-bar/*", backendClient, true))
+
+			mockStat := &core.BlobInfo{}
+			if tc.statErr != nil {
+				mockStat = nil
+			}
+			backendClient.EXPECT().Stat(backend.ReadinessCheckNamespace, backend.ReadinessCheckName).Return(mockStat, tc.statErr)
+			mocks.originClient.EXPECT().CheckReadiness().Return(tc.originErr).AnyTimes()
+
+			err := client.CheckReadiness()
+			if tc.wantErr == "" {
+				require.Nil(err)
+			} else {
+				require.EqualError(err, strings.ReplaceAll(tc.wantErr, "{address}", addr))
+			}
+		})
+	}
 }
 
 func TestPut(t *testing.T) {
@@ -166,7 +231,7 @@ func TestPut(t *testing.T) {
 
 	mocks.depResolver.EXPECT().Resolve(tag, digest).Return(core.DigestList{digest}, nil)
 	mocks.originClient.EXPECT().Stat(tag, digest).Return(core.NewBlobInfo(256), nil)
-	mocks.store.EXPECT().Put(tag, digest, time.Duration(0)).Return(nil)
+	mocks.store.EXPECT().Put(gomock.Any(), tag, digest, time.Duration(0)).Return(nil)
 	mocks.provider.EXPECT().Provide(_testNeighbor).Return(neighborClient)
 	neighborClient.EXPECT().DuplicatePut(
 		tag, digest, mocks.config.DuplicateReplicateStagger).Return(nil)
@@ -229,7 +294,7 @@ func TestDuplicatePut(t *testing.T) {
 	digest := core.DigestFixture()
 	delay := 5 * time.Minute
 
-	mocks.store.EXPECT().Put(tag, digest, delay).Return(nil)
+	mocks.store.EXPECT().Put(gomock.Any(), tag, digest, delay).Return(nil)
 
 	require.NoError(client.DuplicatePut(tag, digest, delay))
 }
@@ -476,7 +541,7 @@ func TestPutAndReplicate(t *testing.T) {
 	gomock.InOrder(
 		mocks.depResolver.EXPECT().Resolve(tag, digest).Return(core.DigestList{digest}, nil),
 		mocks.originClient.EXPECT().Stat(tag, digest).Return(core.NewBlobInfo(256), nil),
-		mocks.store.EXPECT().Put(tag, digest, time.Duration(0)).Return(nil),
+		mocks.store.EXPECT().Put(gomock.Any(), tag, digest, time.Duration(0)).Return(nil),
 		mocks.provider.EXPECT().Provide(_testNeighbor).Return(neighborClient),
 		neighborClient.EXPECT().DuplicatePut(
 			tag, digest, mocks.config.DuplicateReplicateStagger).Return(nil),

@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,11 +18,12 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/uber-go/tally"
 	"github.com/uber/kraken/build-index/tagclient"
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/lib/store"
 	"github.com/uber/kraken/lib/torrent/scheduler"
-	"github.com/uber-go/tally"
+	"github.com/uber/kraken/utils/memsize"
 )
 
 var _ ImageTransferer = (*ReadOnlyTransferer)(nil)
@@ -81,6 +82,8 @@ func (t *ReadOnlyTransferer) Download(namespace string, d core.Digest) (store.Fi
 	} else if err != nil {
 		return nil, fmt.Errorf("cache: %s", err)
 	}
+	mbServed := int64(uint64(f.Size()) / memsize.MB)
+	t.stats.Counter("mb_served").Inc(mbServed)
 	return f, nil
 }
 

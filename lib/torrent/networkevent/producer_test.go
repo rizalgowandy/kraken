@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,14 +16,12 @@ package networkevent
 import (
 	"bufio"
 	"encoding/json"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/uber/kraken/core"
-
 	"github.com/stretchr/testify/require"
+	"github.com/uber/kraken/core"
 )
 
 func TestProducerCreatesAndReusesFile(t *testing.T) {
@@ -33,9 +31,7 @@ func TestProducerCreatesAndReusesFile(t *testing.T) {
 	peer1 := core.PeerIDFixture()
 	peer2 := core.PeerIDFixture()
 
-	dir, err := ioutil.TempDir("", "")
-	require.NoError(err)
-	defer os.RemoveAll(dir)
+	dir := t.TempDir()
 
 	config := Config{
 		Enabled: true,
@@ -67,7 +63,9 @@ func TestProducerCreatesAndReusesFile(t *testing.T) {
 
 	f, err := os.Open(config.LogPath)
 	require.NoError(err)
-	defer f.Close()
+	defer func() {
+		require.NoError(f.Close())
+	}()
 
 	var results []*Event
 	s := bufio.NewScanner(f)

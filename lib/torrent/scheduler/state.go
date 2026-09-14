@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -111,7 +111,9 @@ func (s *state) removeTorrent(h core.InfoHash, err error) {
 			errc <- err
 		}
 		s.sched.netevents.Produce(networkevent.TorrentCancelledEvent(h, s.sched.pctx.PeerID))
-		s.sched.torrentArchive.DeleteTorrent(ctrl.dispatcher.Digest())
+		if err := s.sched.torrentArchive.DeleteTorrent(ctrl.dispatcher.Digest()); err != nil {
+			s.sched.log().Errorf("Error deleting torrent from archive: %s", err)
+		}
 	}
 	delete(s.torrentControls, h)
 }
@@ -127,7 +129,7 @@ func (s *state) addOutgoingConn(c *conn.Conn, b *bitset.BitSet, info *storage.To
 	if !ok {
 		return errors.New("torrent controls must be created before sending handshake")
 	}
-	if err := ctrl.dispatcher.AddPeer(c.PeerID(), b, c); err != nil {
+	if err := ctrl.dispatcher.AddPeer(c.PeerID(), c.IsPeerOrigin(), b, c); err != nil {
 		return fmt.Errorf("add conn to dispatcher: %s", err)
 	}
 	return nil
@@ -154,7 +156,7 @@ func (s *state) addIncomingConn(
 			return err
 		}
 	}
-	if err := ctrl.dispatcher.AddPeer(c.PeerID(), b, c); err != nil {
+	if err := ctrl.dispatcher.AddPeer(c.PeerID(), c.IsPeerOrigin(), b, c); err != nil {
 		return fmt.Errorf("add conn to dispatcher: %s", err)
 	}
 	return nil

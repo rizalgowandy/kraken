@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,6 +14,8 @@
 package piecerequest
 
 import (
+	"fmt"
+
 	"github.com/uber/kraken/utils/heap"
 	"github.com/uber/kraken/utils/syncutil"
 
@@ -31,15 +33,15 @@ func newRarestFirstPolicy() *rarestFirstPolicy {
 
 func (p *rarestFirstPolicy) selectPieces(
 	limit int,
-	valid func(int) bool,
-	candidates *bitset.BitSet,
+	valid func(pieceIdx int) bool,
+	pieceCandidates *bitset.BitSet,
 	numPeersByPiece syncutil.Counters) ([]int, error) {
 
 	candidateQueue := heap.NewPriorityQueue()
-	for i, e := candidates.NextSet(0); e; i, e = candidates.NextSet(i + 1) {
+	for pieceIdx, ok := pieceCandidates.NextSet(0); ok; pieceIdx, ok = pieceCandidates.NextSet(pieceIdx + 1) {
 		candidateQueue.Push(&heap.Item{
-			Value:    int(i),
-			Priority: numPeersByPiece.Get(int(i)),
+			Value:    int(pieceIdx),
+			Priority: numPeersByPiece.Get(int(pieceIdx)),
 		})
 	}
 
@@ -50,7 +52,10 @@ func (p *rarestFirstPolicy) selectPieces(
 			return nil, err
 		}
 
-		candidate := item.Value.(int)
+		candidate, ok := item.Value.(int)
+		if !ok {
+			return nil, fmt.Errorf("expected int, got %T", item.Value)
+		}
 		if valid(candidate) {
 			pieces = append(pieces, candidate)
 		}

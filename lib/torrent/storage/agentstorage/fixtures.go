@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,11 +14,13 @@
 package agentstorage
 
 import (
+	"fmt"
+
+	"github.com/uber-go/tally"
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/lib/store"
 	"github.com/uber/kraken/tracker/metainfoclient"
 	"github.com/uber/kraken/utils/testutil"
-	"github.com/uber-go/tally"
 )
 
 // TorrentArchiveFixture returns a TorrrentArchive for testing purposes.
@@ -49,5 +51,9 @@ func TorrentFixture(mi *core.MetaInfo) (*Torrent, func()) {
 		panic(err)
 	}
 
-	return t.(*Torrent), cleanup.Run
+	torrent, ok := t.(*Torrent)
+	if !ok {
+		panic(fmt.Sprintf("expected *Torrent, got %T", t))
+	}
+	return torrent, cleanup.Run
 }

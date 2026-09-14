@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,7 +19,6 @@ import (
 
 	"github.com/uber/kraken/lib/torrent/scheduler/dispatch/piecerequest"
 	"github.com/uber/kraken/utils/memsize"
-	"github.com/uber/kraken/utils/timeutil"
 )
 
 // Config defines the configuration for piece dispatch.
@@ -37,9 +36,12 @@ type Config struct {
 	// from a peer.
 	PieceRequestPolicy string `yaml:"piece_request_policy"`
 
-	// PipelineLimit limits the total number of requests can be sent to a peer
+	// AgentPipelineLimit limits the total number of requests can be sent to an agent peer
 	// at the same time.
-	PipelineLimit int `yaml:"pipeline_limit"`
+	AgentPipelineLimit int `yaml:"pipeline_limit"`
+	// OriginPipelineLimit limits the total number of requests can be sent to an origin peer
+	// at the same time.
+	OriginPipelineLimit int `yaml:"origin_pipeline_limit"`
 
 	// EndgameThreshold is the number pieces required to complete the torrent
 	// before the torrent enters "endgame", where we start overloading piece
@@ -59,11 +61,14 @@ func (c Config) applyDefaults() Config {
 	if c.PieceRequestTimeoutPerMb == 0 {
 		c.PieceRequestTimeoutPerMb = 4 * time.Second
 	}
-	if c.PipelineLimit == 0 {
-		c.PipelineLimit = 3
+	if c.AgentPipelineLimit == 0 {
+		c.AgentPipelineLimit = 3
+	}
+	if c.OriginPipelineLimit == 0 {
+		c.OriginPipelineLimit = 5
 	}
 	if c.EndgameThreshold == 0 {
-		c.EndgameThreshold = c.PipelineLimit
+		c.EndgameThreshold = c.AgentPipelineLimit
 	}
 	return c
 }
@@ -71,5 +76,5 @@ func (c Config) applyDefaults() Config {
 func (c Config) calcPieceRequestTimeout(maxPieceLength int64) time.Duration {
 	n := float64(c.PieceRequestTimeoutPerMb) * float64(maxPieceLength) / float64(memsize.MB)
 	d := time.Duration(math.Ceil(n))
-	return timeutil.MaxDuration(d, c.PieceRequestMinTimeout)
+	return max(d, c.PieceRequestMinTimeout)
 }

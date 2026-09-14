@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,7 +17,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/uber/kraken/utils/closers"
 	"golang.org/x/net/context/ctxhttp"
 )
 
@@ -77,22 +78,26 @@ func parseHost(host string) (*http.Client, string, string, error) {
 	transport := new(http.Transport)
 
 	protocol, addr := strs[0], strs[1]
-	if protocol == "tcp" {
+	switch protocol {
+	case "tcp":
 		parsed, err := url.Parse("tcp://" + addr)
 		if err != nil {
 			return nil, "", "", err
 		}
 		addr = parsed.Host
 		basePath = parsed.Path
-	} else if protocol == "unix" {
+	case "unix":
 		if len(addr) > len(syscall.RawSockaddrUnix{}.Path) {
 			return nil, "", "", fmt.Errorf("unix socket path %q is too long", addr)
 		}
 		transport.DisableCompression = true
-		transport.Dial = func(_, _ string) (net.Conn, error) {
-			return net.DialTimeout(protocol, addr, _defaultTimeout)
+		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+			d := &net.Dialer{
+				Timeout: _defaultTimeout,
+			}
+			return d.DialContext(ctx, protocol, addr)
 		}
-	} else {
+	default:
 		return nil, "", "", fmt.Errorf("protocol %s not supported", protocol)
 	}
 
@@ -136,17 +141,17 @@ func (cli *dockerClient) PullImage(ctx context.Context, repo, tag string) error 
 	if err != nil {
 		return fmt.Errorf("send post request: %s", err)
 	}
-	defer resp.Body.Close()
+	defer closers.Close(resp.Body)
 	if resp.StatusCode != 200 {
-		errMsg, err := ioutil.ReadAll(resp.Body)
+		errMsg, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return fmt.Errorf("read error resp: %s", err)
 		}
-		return fmt.Errorf("Error posting to %s: code %d, err: %s", urlPath, resp.StatusCode, errMsg)
+		return fmt.Errorf("error posting to %s: code %d, err: %s", urlPath, resp.StatusCode, errMsg)
 	}
 
 	// Docker daemon returns 200 early. Close resp.Body after reading all.
-	if _, err := ioutil.ReadAll(resp.Body); err != nil {
+	if _, err := io.ReadAll(resp.Body); err != nil {
 		return fmt.Errorf("read resp body: %s", err)
 	}
 

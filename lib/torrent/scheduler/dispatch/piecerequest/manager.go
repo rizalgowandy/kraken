@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -64,8 +64,9 @@ type Manager struct {
 	clock   clock.Clock
 	timeout time.Duration
 
-	policy        pieceSelectionPolicy
-	pipelineLimit int
+	policy              pieceSelectionPolicy
+	agentPipelineLimit  int
+	originPipelineLimit int
 }
 
 // NewManager creates a new Manager.
@@ -73,14 +74,16 @@ func NewManager(
 	clk clock.Clock,
 	timeout time.Duration,
 	policy string,
-	pipelineLimit int) (*Manager, error) {
+	agentPipelineLimit int,
+	originPipelineLimit int) (*Manager, error) {
 
 	m := &Manager{
-		requests:       make(map[int][]*Request),
-		requestsByPeer: make(map[core.PeerID]map[int]*Request),
-		clock:          clk,
-		timeout:        timeout,
-		pipelineLimit:  pipelineLimit,
+		requests:            make(map[int][]*Request),
+		requestsByPeer:      make(map[core.PeerID]map[int]*Request),
+		clock:               clk,
+		timeout:             timeout,
+		agentPipelineLimit:  agentPipelineLimit,
+		originPipelineLimit: originPipelineLimit,
 	}
 
 	switch policy {
@@ -100,20 +103,21 @@ func NewManager(
 // reserved under other peers.
 func (m *Manager) ReservePieces(
 	peerID core.PeerID,
-	candidates *bitset.BitSet,
+	isPeerOrigin bool,
+	pieceCandidates *bitset.BitSet,
 	numPeersByPiece syncutil.Counters,
 	allowDuplicates bool) ([]int, error) {
 
 	m.Lock()
 	defer m.Unlock()
 
-	quota := m.requestQuota(peerID)
+	quota := m.requestQuota(peerID, isPeerOrigin)
 	if quota <= 0 {
 		return nil, nil
 	}
 
-	valid := func(i int) bool { return m.validRequest(peerID, i, allowDuplicates) }
-	pieces, err := m.policy.selectPieces(quota, valid, candidates, numPeersByPiece)
+	valid := func(pieceIdx int) bool { return m.validRequest(peerID, pieceIdx, allowDuplicates) }
+	pieces, err := m.policy.selectPieces(quota, valid, pieceCandidates, numPeersByPiece)
 	if err != nil {
 		return nil, err
 	}
@@ -221,8 +225,8 @@ func (m *Manager) GetFailedRequests() []Request {
 	return failed
 }
 
-func (m *Manager) validRequest(peerID core.PeerID, i int, allowDuplicates bool) bool {
-	for _, r := range m.requests[i] {
+func (m *Manager) validRequest(peerID core.PeerID, pieceIdx int, allowDuplicates bool) bool {
+	for _, r := range m.requests[pieceIdx] {
 		if r.Status == StatusPending && !m.expired(r) {
 			if r.PeerID == peerID {
 				return false
@@ -235,8 +239,12 @@ func (m *Manager) validRequest(peerID core.PeerID, i int, allowDuplicates bool) 
 	return true
 }
 
-func (m *Manager) requestQuota(peerID core.PeerID) int {
-	quota := m.pipelineLimit
+func (m *Manager) requestQuota(peerID core.PeerID, isPeerOrigin bool) int {
+	quota := m.agentPipelineLimit
+	if isPeerOrigin {
+		quota = m.originPipelineLimit
+	}
+
 	pm, ok := m.requestsByPeer[peerID]
 	if !ok {
 		return quota

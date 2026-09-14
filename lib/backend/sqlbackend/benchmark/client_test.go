@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -29,6 +29,7 @@ import (
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/lib/backend/backenderrors"
 	"github.com/uber/kraken/lib/backend/sqlbackend"
+	"github.com/uber/kraken/utils/closers"
 )
 
 var sqlClient *sqlbackend.Client
@@ -52,6 +53,7 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	sqlClient = c
+	defer closers.Close(sqlClient)
 	os.Exit(m.Run())
 }
 

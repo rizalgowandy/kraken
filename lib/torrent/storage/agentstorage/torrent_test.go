@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,7 +16,7 @@ package agentstorage
 import (
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"math"
 	"sync"
 	"testing"
@@ -27,7 +27,7 @@ import (
 	"github.com/uber/kraken/lib/store/metadata"
 	"github.com/uber/kraken/lib/torrent/storage"
 	"github.com/uber/kraken/lib/torrent/storage/piecereader"
-	"github.com/uber/kraken/mocks/lib/store"
+	mockstore "github.com/uber/kraken/mocks/lib/store"
 	"github.com/uber/kraken/utils/bitsetutil"
 
 	"github.com/golang/mock/gomock"
@@ -106,8 +106,10 @@ func TestTorrentWriteComplete(t *testing.T) {
 
 	r, err := tor.GetPieceReader(0)
 	require.NoError(err)
-	defer r.Close()
-	result, err := ioutil.ReadAll(r)
+	t.Cleanup(func() {
+		require.NoError(r.Close())
+	})
+	result, err := io.ReadAll(r)
 	require.NoError(err)
 	require.Equal(blob.Content, result)
 
@@ -152,7 +154,7 @@ func TestTorrentWriteMultiplePieceConcurrent(t *testing.T) {
 	// Check content
 	reader, err := cads.Cache().GetFileReader(blob.MetaInfo.Digest().Hex())
 	require.NoError(err)
-	torrentBytes, err := ioutil.ReadAll(reader)
+	torrentBytes, err := io.ReadAll(reader)
 	require.NoError(err)
 	require.Equal(blob.Content, torrentBytes)
 }
@@ -200,9 +202,11 @@ func TestTorrentWriteSamePieceConcurrent(t *testing.T) {
 					require.Equal(errPieceNotComplete, err)
 					continue
 				}
-				defer r.Close()
+				defer func() {
+					require.NoError(r.Close())
+				}()
 
-				result, err := ioutil.ReadAll(r)
+				result, err := io.ReadAll(r)
 				require.NoError(err)
 				require.Equal(1, len(result))
 				require.Equal(1, len(result))
@@ -216,7 +220,7 @@ func TestTorrentWriteSamePieceConcurrent(t *testing.T) {
 
 	reader, err := cads.Cache().GetFileReader(blob.MetaInfo.Digest().Hex())
 	require.NoError(err)
-	torrentBytes, err := ioutil.ReadAll(reader)
+	torrentBytes, err := io.ReadAll(reader)
 	require.NoError(err)
 	require.Equal(blob.Content, torrentBytes)
 }

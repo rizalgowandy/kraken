@@ -24,7 +24,8 @@ import (
 	"github.com/uber-go/tally"
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/lib/backend"
-	"github.com/uber/kraken/mocks/lib/backend/gcsbackend"
+	mockgcsbackend "github.com/uber/kraken/mocks/lib/backend/gcsbackend"
+	"github.com/uber/kraken/utils/closers"
 	"github.com/uber/kraken/utils/mockutil"
 	"github.com/uber/kraken/utils/randutil"
 	"github.com/uber/kraken/utils/rwutil"
@@ -34,6 +35,7 @@ import (
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 type clientMocks struct {
@@ -85,7 +87,7 @@ func TestClientFactory(t *testing.T) {
 	userAuth := UserAuthConfig{"test-user": auth}
 	masterAuth := backend.AuthConfig{_gcs: userAuth}
 	f := factory{}
-	_, err := f.Create(config, masterAuth, tally.NoopScope)
+	_, err := f.Create(config, masterAuth, tally.NoopScope, zap.NewNop().Sugar())
 	fmt.Println(err.Error())
 	require.True(strings.Contains(err.Error(), "invalid gcs credentials"))
 }
@@ -97,6 +99,7 @@ func TestClientStat(t *testing.T) {
 	defer cleanup()
 
 	client := mocks.new()
+	defer closers.Close(client)
 
 	var objectAttrs storage.ObjectAttrs
 	objectAttrs.Size = 100
@@ -115,6 +118,7 @@ func TestClientDownload(t *testing.T) {
 	defer cleanup()
 
 	client := mocks.new()
+	defer closers.Close(client)
 	data := randutil.Text(32)
 
 	mocks.gcs.EXPECT().Download(
@@ -193,6 +197,7 @@ func TestClientList(t *testing.T) {
 	defer cleanup()
 
 	client := mocks.new()
+	defer closers.Close(client)
 
 	contToken := ""
 	mocks.gcs.EXPECT().GetObjectIterator(

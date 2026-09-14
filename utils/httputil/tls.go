@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -21,10 +21,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
+	"os"
+	"time"
 
 	"github.com/uber/kraken/utils/log"
+
+	"github.com/uber-go/tally"
 )
+
+const _certExpiryCheckInterval = time.Hour
 
 // ErrEmptyCommonName is returned when common name is not provided for key generation.
 var ErrEmptyCommonName = errors.New("empty common name")
@@ -74,28 +79,41 @@ func (c *TLSConfig) BuildClient() (*tls.Config, error) {
 		}
 	}
 	if c.Client.Cert.Path != "" {
-		certPEM, err := parseCert(c.Client.Cert.Path)
-		if err != nil {
-			return nil, fmt.Errorf("parse client cert: %s", err)
-		}
-		keyPEM, err := parseKey(c.Client.Key.Path, c.Client.Passphrase.Path)
-		if err != nil {
-			return nil, fmt.Errorf("parse client key: %s", err)
-		}
-		cert, err := tls.X509KeyPair(certPEM, keyPEM)
+		cert, err := loadX509Pair(c.Client)
 		if err != nil {
 			return nil, fmt.Errorf("load client x509 key pair: %s", err)
 		}
 		certs = []tls.Certificate{cert}
 	}
 	c.tls = &tls.Config{
-		Certificates:             certs,
-		RootCAs:                  caPool,
-		ServerName:               c.Name,
-		PreferServerCipherSuites: true,
-		InsecureSkipVerify:       false, // This is important to enforce verification of server.
+		Certificates:       certs,
+		RootCAs:            caPool,
+		ServerName:         c.Name,
+		InsecureSkipVerify: false, // This is important to enforce verification of server.
 	}
 	return c.tls, nil
+}
+
+// loadX509Pair reads and parses the cert/key files described by pair.
+func loadX509Pair(pair X509Pair) (tls.Certificate, error) {
+	certPEM, err := parseCert(pair.Cert.Path)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("parse cert: %s", err)
+	}
+	keyPEM, err := parseKey(pair.Key.Path, pair.Passphrase.Path)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("parse key: %s", err)
+	}
+	return tls.X509KeyPair(certPEM, keyPEM)
+}
+
+// certNotAfter returns the expiration time of cert's leaf certificate.
+func certNotAfter(cert tls.Certificate) (time.Time, error) {
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse leaf certificate: %s", err)
+	}
+	return leaf.NotAfter, nil
 }
 
 // WriteCABundle writes a list of CA to a writer.
@@ -142,7 +160,7 @@ func concatSecrets(secrets []Secret) ([]byte, error) {
 }
 
 func parseCert(path string) ([]byte, error) {
-	certBytes, err := ioutil.ReadFile(path)
+	certBytes, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read file: %s", err)
 	}
@@ -151,15 +169,17 @@ func parseCert(path string) ([]byte, error) {
 
 // parseKey reads key from file and decrypts if passphrase is provided.
 func parseKey(path, passphrasePath string) ([]byte, error) {
-	keyPEM, err := ioutil.ReadFile(path)
+	keyPEM, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read file: %s", err)
 	}
 	if passphrasePath != "" {
-		passphrase, err := ioutil.ReadFile(passphrasePath)
+		passphrase, err := os.ReadFile(passphrasePath)
 		if err != nil {
 			return nil, fmt.Errorf("read passphrase file: %s", err)
 		}
+		// Trim any newlines from the passphrase
+		passphrase = bytes.TrimSpace(passphrase)
 		keyBytes, err := decryptPEMBlock(keyPEM, passphrase)
 		if err != nil {
 			return nil, fmt.Errorf("decrypt key: %s", err)
@@ -178,7 +198,10 @@ func decryptPEMBlock(data, secret []byte) ([]byte, error) {
 	if block == nil || len(block.Bytes) < 1 {
 		return nil, errors.New("empty block")
 	}
-	decoded, err := x509.DecryptPEMBlock(block, secret)
+	// x509.DecryptPEMBlock is deprecated, but it replacement requires additional coding and changes in the encryption algorithm.
+	// given all the tls tests are skipped, @egorikas didn't feel confident enough to fix the code.
+	// so, the lint warning is ignored for now, potentially the tests will be recovered, then the code should be fixed.
+	decoded, err := x509.DecryptPEMBlock(block, secret) //nolint:staticcheck
 	if err != nil {
 		return nil, fmt.Errorf("decrypt block: %s", err)
 	}
@@ -193,4 +216,59 @@ func encodePEMKey(data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("encode key: %s", err)
 	}
 	return buf.Bytes(), nil
+}
+
+type certExpiryMonitor struct {
+	stopCh chan struct{}
+}
+
+// MonitorCertExpiration starts a background goroutine to periodically emit
+// when TLS certs will expire.
+func MonitorCertExpiration(tlsConfig *TLSConfig, stats tally.Scope) io.Closer {
+	m := &certExpiryMonitor{stopCh: make(chan struct{})}
+
+	check := func() {
+		reportCertExpiry("server", tlsConfig.Server, stats)
+		reportCertExpiry("client", tlsConfig.Client, stats)
+	}
+
+	check()
+
+	go func() {
+		ticker := time.NewTicker(_certExpiryCheckInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				check()
+			case <-m.stopCh:
+				return
+			}
+		}
+	}()
+
+	return m
+}
+
+func (m *certExpiryMonitor) Close() error {
+	close(m.stopCh)
+	return nil
+}
+
+func reportCertExpiry(name string, pair X509Pair, stats tally.Scope) {
+	if pair.Disabled || pair.Cert.Path == "" {
+		return
+	}
+	cert, err := loadX509Pair(pair)
+	if err != nil {
+		log.Errorf("Error loading %s cert for expiry check: %s", name, err)
+		return
+	}
+	notAfter, err := certNotAfter(cert)
+	if err != nil {
+		log.Errorf("Error parsing %s cert for expiry check: %s", name, err)
+		return
+	}
+	gauge := stats.Tagged(map[string]string{"cert": name}).Gauge("tls_cert_expiry_days")
+	gauge.Update(time.Until(notAfter).Hours() / 24)
 }

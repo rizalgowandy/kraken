@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -32,6 +32,7 @@ import (
 	"github.com/uber/kraken/lib/torrent/storage"
 	"github.com/uber/kraken/lib/torrent/storage/piecereader"
 	"github.com/uber/kraken/utils/bandwidth"
+	"github.com/uber/kraken/utils/closers"
 	"github.com/uber/kraken/utils/memsize"
 )
 
@@ -46,17 +47,14 @@ type Events interface {
 // Conn manages peer communication over a connection for multiple torrents. Inbound
 // messages are multiplexed based on the torrent they pertain to.
 type Conn struct {
-	peerID      core.PeerID
-	infoHash    core.InfoHash
-	createdAt   time.Time
-	localPeerID core.PeerID
-	bandwidth   *bandwidth.Limiter
+	peerID       core.PeerID
+	isPeerOrigin bool
+	infoHash     core.InfoHash
+	createdAt    time.Time
+	localPeerID  core.PeerID
+	bandwidth    *bandwidth.Limiter
 
 	events Events
-
-	mu                    sync.Mutex // Protects the following fields:
-	lastGoodPieceReceived time.Time
-	lastPieceSent         time.Time
 
 	nc            net.Conn
 	config        Config
@@ -90,6 +88,7 @@ func newConn(
 	nc net.Conn,
 	localPeerID core.PeerID,
 	remotePeerID core.PeerID,
+	isRemotePeerOrigin bool,
 	info *storage.TorrentInfo,
 	openedByRemote bool,
 	logger *zap.SugaredLogger) (*Conn, error) {
@@ -102,6 +101,7 @@ func newConn(
 
 	c := &Conn{
 		peerID:         remotePeerID,
+		isPeerOrigin:   isRemotePeerOrigin,
 		infoHash:       info.InfoHash(),
 		createdAt:      clk.Now(),
 		localPeerID:    localPeerID,
@@ -137,6 +137,11 @@ func (c *Conn) Start() {
 // PeerID returns the remote peer id.
 func (c *Conn) PeerID() core.PeerID {
 	return c.peerID
+}
+
+// IsPeerOrigin returns whether the remote peer is an origin instead of an agent.
+func (c *Conn) IsPeerOrigin() bool {
+	return c.isPeerOrigin
 }
 
 // InfoHash returns the info hash for the torrent being transmitted over this
@@ -183,7 +188,7 @@ func (c *Conn) Close() {
 	}
 	go func() {
 		close(c.done)
-		c.nc.Close()
+		closers.Close(c.nc)
 		c.wg.Wait()
 		c.events.ConnClosed(c)
 	}()
@@ -252,7 +257,7 @@ func (c *Conn) readLoop() {
 }
 
 func (c *Conn) sendPiecePayload(pr storage.PieceReader) error {
-	defer pr.Close()
+	defer closers.Close(pr)
 
 	if err := c.bandwidth.ReserveEgress(int64(pr.Length())); err != nil {
 		// TODO(codyg): This is bad. Consider alerting here.

@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,11 +16,13 @@ package agentstorage
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/uber-go/tally"
 	"github.com/willf/bitset"
 
 	"github.com/uber/kraken/core"
+	"github.com/uber/kraken/lib/observability"
 	"github.com/uber/kraken/lib/store"
 	"github.com/uber/kraken/lib/store/metadata"
 	"github.com/uber/kraken/lib/torrent/storage"
@@ -74,7 +76,7 @@ func (a *TorrentArchive) Stat(namespace string, d core.Digest) (*storage.Torrent
 func (a *TorrentArchive) CreateTorrent(namespace string, d core.Digest) (storage.Torrent, error) {
 	var tm metadata.TorrentMeta
 	if err := a.cads.Any().GetMetadata(d.Hex(), &tm); os.IsNotExist(err) {
-		downloadTimer := a.stats.Timer("metainfo_download").Start()
+		startTime := time.Now()
 		mi, err := a.metaInfoClient.Download(namespace, d)
 		if err != nil {
 			if err == metainfoclient.ErrNotFound {
@@ -82,7 +84,8 @@ func (a *TorrentArchive) CreateTorrent(namespace string, d core.Digest) (storage
 			}
 			return nil, fmt.Errorf("download metainfo: %s", err)
 		}
-		downloadTimer.Stop()
+		metainfoDownloadLatency := time.Since(startTime)
+		observability.EmitDownloadPerformance(a.stats, observability.METAINFO_DOWNLOAD, mi.Length(), metainfoDownloadLatency)
 
 		// There's a race condition here, but it's "okay"... Basically, we could
 		// initialize a download file with metainfo that is rejected by file store,
@@ -91,7 +94,7 @@ func (a *TorrentArchive) CreateTorrent(namespace string, d core.Digest) (storage
 		// is derived from, so it's "okay".
 		createErr := a.cads.CreateDownloadFile(mi.Digest().Hex(), mi.Length())
 		if createErr != nil &&
-			!(a.cads.InDownloadError(createErr) || a.cads.InCacheError(createErr)) {
+			!a.cads.InDownloadError(createErr) && !a.cads.InCacheError(createErr) {
 			return nil, fmt.Errorf("create download file: %s", createErr)
 		}
 		tm.MetaInfo = mi

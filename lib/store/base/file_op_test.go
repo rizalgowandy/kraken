@@ -14,7 +14,7 @@
 package base
 
 import (
-	"io/ioutil"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -61,9 +61,9 @@ func TestFileOp(t *testing.T) {
 			for _, test := range tests {
 				testName := runtime.FuncForPC(reflect.ValueOf(test).Pointer()).Name()
 				t.Run(testName, func(t *testing.T) {
-					require := require.New(t)
 					s, cleanup := store.fixture()
 					defer cleanup()
+					require := require.New(t)
 					test(require, s)
 				})
 			}
@@ -183,7 +183,7 @@ func testMoveFile(require *require.Assertions, storeBundle *fileStoreTestBundle)
 	require.NoError(err)
 	_, err = readWriterState2.Write([]byte{'t', 'e', 's', 't', '\n'})
 	require.NoError(err)
-	readWriterState2.Close()
+	require.NoError(readWriterState2.Close())
 	readWriterState2, err = store.NewFileOp().AcceptState(s1).GetFileReadWriter(fn, partSize, partSize)
 	require.NoError(err)
 
@@ -206,9 +206,9 @@ func testMoveFile(require *require.Assertions, storeBundle *fileStoreTestBundle)
 	readWriterState1, err := store.NewFileOp().AcceptState(s2).GetFileReadWriter(fn, partSize, partSize)
 	require.NoError(err)
 	// Check content
-	dataState1, err := ioutil.ReadAll(readWriterState1)
+	dataState1, err := io.ReadAll(readWriterState1)
 	require.NoError(err)
-	dataState2, err := ioutil.ReadAll(readWriterState2)
+	dataState2, err := io.ReadAll(readWriterState2)
 	require.NoError(err)
 	require.Equal(dataState1, dataState2)
 	require.Equal([]byte{'t', 'e', 's', 't', '\n'}, dataState1)
@@ -216,28 +216,30 @@ func testMoveFile(require *require.Assertions, storeBundle *fileStoreTestBundle)
 	_, err = readWriterState1.WriteAt([]byte{'1'}, 0)
 	require.NoError(err)
 	// Check content again
-	readWriterState1.Seek(0, 0)
-	readWriterState2.Seek(0, 0)
-	dataState1, err = ioutil.ReadAll(readWriterState1)
+	_, err = readWriterState1.Seek(0, 0)
 	require.NoError(err)
-	dataState2, err = ioutil.ReadAll(readWriterState2)
+	_, err = readWriterState2.Seek(0, 0)
+	require.NoError(err)
+	dataState1, err = io.ReadAll(readWriterState1)
+	require.NoError(err)
+	dataState2, err = io.ReadAll(readWriterState2)
 	require.NoError(err)
 	require.Equal(dataState1, dataState2)
 	require.Equal([]byte{'1', 'e', 's', 't', '\n'}, dataState1)
 	// Close on last opened readwriter removes hardlink
-	readWriterState2.Close()
+	require.NoError(readWriterState2.Close())
 	_, err = os.Stat(filepath.Join(s1.GetDirectory(), store.fileEntryFactory.GetRelativePath(fn)))
 	require.True(os.IsNotExist(err))
-	readWriterState1.Close()
+	require.NoError(readWriterState1.Close())
 	_, err = os.Stat(filepath.Join(s2.GetDirectory(), store.fileEntryFactory.GetRelativePath(fn)))
 	require.NoError(err)
 	// Check content again
 	readWriterStateMoved, err := store.NewFileOp().AcceptState(s2).GetFileReadWriter(fn, partSize, partSize)
 	require.NoError(err)
-	dataMoved, err := ioutil.ReadAll(readWriterStateMoved)
+	dataMoved, err := io.ReadAll(readWriterStateMoved)
 	require.NoError(err)
 	require.Equal([]byte{'1', 'e', 's', 't', '\n'}, dataMoved)
-	readWriterStateMoved.Close()
+	require.NoError(readWriterStateMoved.Close())
 
 	// Move back to state1
 	err = store.NewFileOp().AcceptState(s2).MoveFile(fn, s1)
@@ -275,7 +277,8 @@ func testDeleteFile(require *require.Assertions, storeBundle *fileStoreTestBundl
 	// Write to file
 	rw, err := store.NewFileOp().AcceptState(s1).GetFileReadWriter(fn, 100 /*readPartSize*/, 100 /*writePartSize*/)
 	require.NoError(err)
-	rw.Write([]byte(content))
+	_, err = rw.Write([]byte(content))
+	require.NoError(err)
 
 	// Confirm deletion
 	err = store.NewFileOp().AcceptState(s1).DeleteFile(fn)
@@ -284,18 +287,21 @@ func testDeleteFile(require *require.Assertions, storeBundle *fileStoreTestBundl
 	require.True(os.IsNotExist(err))
 
 	// Existing readwriter should still work after deletion
-	rw.Seek(0, 0)
-	data, err := ioutil.ReadAll(rw)
+	_, err = rw.Seek(0, 0)
+	require.NoError(err)
+	data, err := io.ReadAll(rw)
 	require.NoError(err)
 	require.Equal(content, string(data))
 
-	rw.Write([]byte(content))
-	rw.Seek(0, 0)
-	data, err = ioutil.ReadAll(rw)
+	_, err = rw.Write([]byte(content))
+	require.NoError(err)
+	_, err = rw.Seek(0, 0)
+	require.NoError(err)
+	data, err = io.ReadAll(rw)
 	require.NoError(err)
 	require.Equal(content+content, string(data))
 
-	rw.Close()
+	require.NoError(rw.Close())
 
 	// Get deleted file should fail
 	_, err = store.NewFileOp().AcceptState(s1).GetFileReader(fn, 100 /*readPartSize */)
@@ -314,7 +320,9 @@ func testGetFileReader(require *require.Assertions, storeBundle *fileStoreTestBu
 	// Get ReadWriter and modify the file.
 	readWriter, err := store.NewFileOp().AcceptState(s1).GetFileReadWriter(fn, 100 /*readPartSize */, 100 /*writePartSize*/)
 	require.NoError(err)
-	defer readWriter.Close()
+	defer func() {
+		require.NoError(readWriter.Close())
+	}()
 	_, err = readWriter.Write([]byte{'t', 'e', 's', 't', '\n'})
 	require.NoError(err)
 
@@ -343,7 +351,7 @@ func testGetFileReader(require *require.Assertions, storeBundle *fileStoreTestBu
 
 	reader, err := store.NewFileOp().AcceptState(s1).GetFileReader(fn, 100 /*readPartSize */)
 	require.NoError(err)
-	reader.Close()
+	require.NoError(reader.Close())
 }
 
 func testGetFileReadWriter(require *require.Assertions, storeBundle *fileStoreTestBundle) {

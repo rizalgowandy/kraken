@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -27,7 +27,9 @@ func checkTask(t *testing.T, expected *Task, result persistedretry.Task) {
 	t.Helper()
 
 	expectedCopy := *expected
-	resultCopy := *(result.(*Task))
+	resultTask, ok := result.(*Task)
+	require.True(t, ok)
+	resultCopy := *resultTask
 
 	require.InDelta(t, expectedCopy.CreatedAt.Unix(), resultCopy.CreatedAt.Unix(), 1)
 	expectedCopy.CreatedAt = time.Time{}
@@ -69,7 +71,7 @@ func checkFailed(t *testing.T, store *Store, expected ...*Task) {
 func TestDatabaseNotLocked(t *testing.T) {
 	require := require.New(t)
 
-	db, cleanup := localdb.Fixture()
+	db, cleanup := localdb.Fixture(t)
 	defer cleanup()
 
 	store := NewStore(db)
@@ -91,7 +93,7 @@ func TestDatabaseNotLocked(t *testing.T) {
 func TestAddPending(t *testing.T) {
 	require := require.New(t)
 
-	db, cleanup := localdb.Fixture()
+	db, cleanup := localdb.Fixture(t)
 	defer cleanup()
 
 	store := NewStore(db)
@@ -106,7 +108,7 @@ func TestAddPending(t *testing.T) {
 func TestAddPendingTwiceReturnsErrTaskExists(t *testing.T) {
 	require := require.New(t)
 
-	db, cleanup := localdb.Fixture()
+	db, cleanup := localdb.Fixture(t)
 	defer cleanup()
 
 	store := NewStore(db)
@@ -120,7 +122,7 @@ func TestAddPendingTwiceReturnsErrTaskExists(t *testing.T) {
 func TestAddFailed(t *testing.T) {
 	require := require.New(t)
 
-	db, cleanup := localdb.Fixture()
+	db, cleanup := localdb.Fixture(t)
 	defer cleanup()
 
 	store := NewStore(db)
@@ -135,7 +137,7 @@ func TestAddFailed(t *testing.T) {
 func TestAddFailedTwiceReturnsErrTaskExists(t *testing.T) {
 	require := require.New(t)
 
-	db, cleanup := localdb.Fixture()
+	db, cleanup := localdb.Fixture(t)
 	defer cleanup()
 
 	store := NewStore(db)
@@ -149,7 +151,7 @@ func TestAddFailedTwiceReturnsErrTaskExists(t *testing.T) {
 func TestStateTransitions(t *testing.T) {
 	require := require.New(t)
 
-	db, cleanup := localdb.Fixture()
+	db, cleanup := localdb.Fixture(t)
 	defer cleanup()
 
 	store := NewStore(db)
@@ -172,7 +174,7 @@ func TestStateTransitions(t *testing.T) {
 func TestMarkTaskNotFound(t *testing.T) {
 	require := require.New(t)
 
-	db, cleanup := localdb.Fixture()
+	db, cleanup := localdb.Fixture(t)
 	defer cleanup()
 
 	store := NewStore(db)
@@ -186,7 +188,7 @@ func TestMarkTaskNotFound(t *testing.T) {
 func TestRemove(t *testing.T) {
 	require := require.New(t)
 
-	db, cleanup := localdb.Fixture()
+	db, cleanup := localdb.Fixture(t)
 	defer cleanup()
 
 	store := NewStore(db)
@@ -205,7 +207,7 @@ func TestRemove(t *testing.T) {
 func TestDelay(t *testing.T) {
 	require := require.New(t)
 
-	db, cleanup := localdb.Fixture()
+	db, cleanup := localdb.Fixture(t)
 	defer cleanup()
 
 	store := NewStore(db)
@@ -230,7 +232,7 @@ func TestDelay(t *testing.T) {
 func TestFind(t *testing.T) {
 	require := require.New(t)
 
-	db, cleanup := localdb.Fixture()
+	db, cleanup := localdb.Fixture(t)
 	defer cleanup()
 
 	store := NewStore(db)
@@ -249,7 +251,7 @@ func TestFind(t *testing.T) {
 func TestFindEmpty(t *testing.T) {
 	require := require.New(t)
 
-	db, cleanup := localdb.Fixture()
+	db, cleanup := localdb.Fixture(t)
 	defer cleanup()
 
 	store := NewStore(db)

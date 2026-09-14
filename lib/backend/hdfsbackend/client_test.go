@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -22,12 +22,14 @@ import (
 	"github.com/uber-go/tally"
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/lib/backend/hdfsbackend/webhdfs"
-	"github.com/uber/kraken/mocks/lib/backend/hdfsbackend/webhdfs"
+	mockwebhdfs "github.com/uber/kraken/mocks/lib/backend/hdfsbackend/webhdfs"
+	"github.com/uber/kraken/utils/closers"
 	"github.com/uber/kraken/utils/mockutil"
 	"github.com/uber/kraken/utils/randutil"
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 type clientMocks struct {
@@ -64,7 +66,7 @@ func TestClientFactory(t *testing.T) {
 		testing:       true,
 	}
 	f := factory{}
-	_, err := f.Create(config, nil, tally.NoopScope)
+	_, err := f.Create(config, nil, tally.NoopScope, zap.NewNop().Sugar())
 	require.NoError(err)
 }
 
@@ -75,6 +77,7 @@ func TestClientStat(t *testing.T) {
 	defer cleanup()
 
 	client := mocks.new()
+	defer closers.Close(client)
 
 	mocks.webhdfs.EXPECT().GetFileStatus("/root/test").Return(webhdfs.FileStatus{Length: 32}, nil)
 
@@ -148,6 +151,7 @@ func TestClientList(t *testing.T) {
 			defer cleanup()
 
 			client := mocks.new()
+			defer closers.Close(client)
 
 			mocks.webhdfs.EXPECT().ListFileStatus("/root").Return([]webhdfs.FileStatus{{
 				PathSuffix: "foo",
@@ -213,6 +217,7 @@ func TestClientListErrorDoesNotLeakGoroutines(t *testing.T) {
 	defer cleanup()
 
 	client := mocks.new()
+	defer closers.Close(client)
 
 	initDirectoryTree(mocks, "/root", 10, 3) // 1000 nodes.
 

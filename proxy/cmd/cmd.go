@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,10 +15,10 @@ package cmd
 
 import (
 	"flag"
-
 	"fmt"
-	"net/http"
+	"runtime"
 
+	"github.com/uber-go/tally"
 	"github.com/uber/kraken/build-index/tagclient"
 	"github.com/uber/kraken/lib/dockerregistry/transfer"
 	"github.com/uber/kraken/lib/healthcheck"
@@ -29,21 +29,21 @@ import (
 	"github.com/uber/kraken/origin/blobclient"
 	"github.com/uber/kraken/proxy/proxyserver"
 	"github.com/uber/kraken/proxy/registryoverride"
+	"github.com/uber/kraken/utils/closers"
 	"github.com/uber/kraken/utils/configutil"
 	"github.com/uber/kraken/utils/flagutil"
+	"github.com/uber/kraken/utils/httputil"
 	"github.com/uber/kraken/utils/log"
-
-	"github.com/uber-go/tally"
 	"go.uber.org/zap"
 )
 
 // Flags defines proxy CLI flags.
 type Flags struct {
-	Ports         flagutil.Ints
-	ServerPort    int
-	ConfigFile    string
-	KrakenCluster string
-	SecretsFile   string
+	Ports                flagutil.Ints
+	ConfigFile           string
+	KrakenCluster        string
+	SecretsFile          string
+	MutexProfileFraction int
 }
 
 // ParseFlags parses proxy CLI flags.
@@ -51,14 +51,15 @@ func ParseFlags() *Flags {
 	var flags Flags
 	flag.Var(
 		&flags.Ports, "port", "port to listen on (may specify multiple)")
-	flag.IntVar(
-		&flags.ServerPort, "server-port", 0, "http server port to listen on")
 	flag.StringVar(
 		&flags.ConfigFile, "config", "", "configuration file path")
 	flag.StringVar(
 		&flags.KrakenCluster, "cluster", "", "cluster name (e.g. prod01-zone1)")
 	flag.StringVar(
 		&flags.SecretsFile, "secrets", "", "path to a secrets YAML file to load into configuration")
+	flag.IntVar(
+		&flags.MutexProfileFraction, "mutex-profile-fraction", 0,
+		"rate for runtime.SetMutexProfileFraction; 0 disables, 1 records all events")
 	flag.Parse()
 	return &flags
 }
@@ -67,6 +68,7 @@ type options struct {
 	config  *Config
 	metrics tally.Scope
 	logger  *zap.Logger
+	effect  func()
 }
 
 // Option defines an optional Run parameter.
@@ -88,6 +90,11 @@ func WithLogger(l *zap.Logger) Option {
 	return func(o *options) { o.logger = l }
 }
 
+// WithEffect runs any setup component requires
+func WithEffect(f func()) Option {
+	return func(o *options) { o.effect = f }
+}
+
 // Run runs the proxy.
 func Run(flags *Flags, opts ...Option) {
 	if len(flags.Ports) == 0 {
@@ -97,6 +104,10 @@ func Run(flags *Flags, opts ...Option) {
 	var overrides options
 	for _, o := range opts {
 		o(&overrides)
+	}
+
+	if flags.MutexProfileFraction > 0 {
+		runtime.SetMutexProfileFraction(flags.MutexProfileFraction)
 	}
 
 	var config Config
@@ -117,7 +128,11 @@ func Run(flags *Flags, opts ...Option) {
 		log.SetGlobalLogger(overrides.logger.Sugar())
 	} else {
 		zlog := log.ConfigureLogger(config.ZapLogging)
-		defer zlog.Sync()
+		defer func() {
+			if err := zlog.Sync(); err != nil {
+				fmt.Printf("Failed to sync logger: %s", err)
+			}
+		}()
 	}
 
 	stats := overrides.metrics
@@ -127,10 +142,12 @@ func Run(flags *Flags, opts ...Option) {
 			log.Fatalf("Failed to init metrics: %s", err)
 		}
 		stats = s
-		defer closer.Close()
+		defer closers.Close(closer)
 	}
 
-	go metrics.EmitVersion(stats)
+	if overrides.effect != nil {
+		overrides.effect()
+	}
 
 	cas, err := store.NewCAStore(config.CAStore, stats)
 	if err != nil {
@@ -141,6 +158,7 @@ func Run(flags *Flags, opts ...Option) {
 	if err != nil {
 		log.Fatalf("Error building client tls config: %s", err)
 	}
+	defer closers.Close(httputil.MonitorCertExpiration(&config.TLS, stats))
 
 	origins, err := config.Origin.Build(upstream.WithHealthCheck(healthcheck.Default(tls)))
 	if err != nil {
@@ -159,15 +177,10 @@ func Run(flags *Flags, opts ...Option) {
 
 	transferer := transfer.NewReadWriteTransferer(stats, tagClient, originCluster, cas)
 
-	// Open preheat function only if server-port was defined.
-	if flags.ServerPort != 0 {
-		server := proxyserver.New(stats, originCluster)
-		addr := fmt.Sprintf(":%d", flags.ServerPort)
-		log.Infof("Starting http server on %s", addr)
-		go func() {
-			log.Fatal(http.ListenAndServe(addr, server.Handler()))
-		}()
-	}
+	server := proxyserver.New(stats, config.Server, originCluster, tagClient, false)
+	go func() {
+		log.Fatalf("Error starting proxy server %s", server.ListenAndServe())
+	}()
 
 	registry, err := config.Registry.Build(config.Registry.ReadWriteParameters(transferer, cas, stats))
 	if err != nil {
@@ -189,6 +202,7 @@ func Run(flags *Flags, opts ...Option) {
 		"registry_server": nginx.GetServer(
 			config.Registry.Docker.HTTP.Net, config.Registry.Docker.HTTP.Addr),
 		"registry_override_server": nginx.GetServer(
-			config.RegistryOverride.Listener.Net, config.RegistryOverride.Listener.Addr)},
+			config.RegistryOverride.Listener.Net, config.RegistryOverride.Listener.Addr),
+		"proxy_server": nginx.GetServer(config.Server.Listener.Net, config.Server.Listener.Addr)},
 		nginx.WithTLS(config.TLS)))
 }

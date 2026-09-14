@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -54,7 +54,7 @@ func (c *ThrottledClient) Upload(namespace, name string, src io.Reader) error {
 
 // Download downloads name into dst.
 func (c *ThrottledClient) Download(namespace, name string, dst io.Writer) error {
-	info, err := c.Client.Stat(namespace, name)
+	info, err := c.Stat(namespace, name)
 	if err != nil {
 		return err
 	}

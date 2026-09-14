@@ -5,50 +5,66 @@
 package mockblobclient
 
 import (
-	gomock "github.com/golang/mock/gomock"
-	core "github.com/uber/kraken/core"
+	context "context"
 	io "io"
 	reflect "reflect"
+
+	gomock "github.com/golang/mock/gomock"
+	core "github.com/uber/kraken/core"
 )
 
-// MockClusterClient is a mock of ClusterClient interface
+// MockClusterClient is a mock of ClusterClient interface.
 type MockClusterClient struct {
 	ctrl     *gomock.Controller
 	recorder *MockClusterClientMockRecorder
 }
 
-// MockClusterClientMockRecorder is the mock recorder for MockClusterClient
+// MockClusterClientMockRecorder is the mock recorder for MockClusterClient.
 type MockClusterClientMockRecorder struct {
 	mock *MockClusterClient
 }
 
-// NewMockClusterClient creates a new mock instance
+// NewMockClusterClient creates a new mock instance.
 func NewMockClusterClient(ctrl *gomock.Controller) *MockClusterClient {
 	mock := &MockClusterClient{ctrl: ctrl}
 	mock.recorder = &MockClusterClientMockRecorder{mock}
 	return mock
 }
 
-// EXPECT returns an object that allows the caller to indicate expected use
+// EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockClusterClient) EXPECT() *MockClusterClientMockRecorder {
 	return m.recorder
 }
 
-// DownloadBlob mocks base method
-func (m *MockClusterClient) DownloadBlob(arg0 string, arg1 core.Digest, arg2 io.Writer) error {
+// CheckReadiness mocks base method.
+func (m *MockClusterClient) CheckReadiness() error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "DownloadBlob", arg0, arg1, arg2)
+	ret := m.ctrl.Call(m, "CheckReadiness")
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// DownloadBlob indicates an expected call of DownloadBlob
-func (mr *MockClusterClientMockRecorder) DownloadBlob(arg0, arg1, arg2 interface{}) *gomock.Call {
+// CheckReadiness indicates an expected call of CheckReadiness.
+func (mr *MockClusterClientMockRecorder) CheckReadiness() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DownloadBlob", reflect.TypeOf((*MockClusterClient)(nil).DownloadBlob), arg0, arg1, arg2)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CheckReadiness", reflect.TypeOf((*MockClusterClient)(nil).CheckReadiness))
 }
 
-// GetMetaInfo mocks base method
+// DownloadBlob mocks base method.
+func (m *MockClusterClient) DownloadBlob(arg0 context.Context, arg1 string, arg2 core.Digest, arg3 io.Writer) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DownloadBlob", arg0, arg1, arg2, arg3)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DownloadBlob indicates an expected call of DownloadBlob.
+func (mr *MockClusterClientMockRecorder) DownloadBlob(arg0, arg1, arg2, arg3 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DownloadBlob", reflect.TypeOf((*MockClusterClient)(nil).DownloadBlob), arg0, arg1, arg2, arg3)
+}
+
+// GetMetaInfo mocks base method.
 func (m *MockClusterClient) GetMetaInfo(arg0 string, arg1 core.Digest) (*core.MetaInfo, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetMetaInfo", arg0, arg1)
@@ -57,13 +73,13 @@ func (m *MockClusterClient) GetMetaInfo(arg0 string, arg1 core.Digest) (*core.Me
 	return ret0, ret1
 }
 
-// GetMetaInfo indicates an expected call of GetMetaInfo
+// GetMetaInfo indicates an expected call of GetMetaInfo.
 func (mr *MockClusterClientMockRecorder) GetMetaInfo(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMetaInfo", reflect.TypeOf((*MockClusterClient)(nil).GetMetaInfo), arg0, arg1)
 }
 
-// OverwriteMetaInfo mocks base method
+// OverwriteMetaInfo mocks base method.
 func (m *MockClusterClient) OverwriteMetaInfo(arg0 core.Digest, arg1 int64) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "OverwriteMetaInfo", arg0, arg1)
@@ -71,13 +87,13 @@ func (m *MockClusterClient) OverwriteMetaInfo(arg0 core.Digest, arg1 int64) erro
 	return ret0
 }
 
-// OverwriteMetaInfo indicates an expected call of OverwriteMetaInfo
+// OverwriteMetaInfo indicates an expected call of OverwriteMetaInfo.
 func (mr *MockClusterClientMockRecorder) OverwriteMetaInfo(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "OverwriteMetaInfo", reflect.TypeOf((*MockClusterClient)(nil).OverwriteMetaInfo), arg0, arg1)
 }
 
-// Owners mocks base method
+// Owners mocks base method.
 func (m *MockClusterClient) Owners(arg0 core.Digest) ([]core.PeerContext, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Owners", arg0)
@@ -86,13 +102,27 @@ func (m *MockClusterClient) Owners(arg0 core.Digest) ([]core.PeerContext, error)
 	return ret0, ret1
 }
 
-// Owners indicates an expected call of Owners
+// Owners indicates an expected call of Owners.
 func (mr *MockClusterClientMockRecorder) Owners(arg0 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Owners", reflect.TypeOf((*MockClusterClient)(nil).Owners), arg0)
 }
 
-// ReplicateToRemote mocks base method
+// PrefetchBlob mocks base method.
+func (m *MockClusterClient) PrefetchBlob(arg0 string, arg1 core.Digest) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "PrefetchBlob", arg0, arg1)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// PrefetchBlob indicates an expected call of PrefetchBlob.
+func (mr *MockClusterClientMockRecorder) PrefetchBlob(arg0, arg1 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PrefetchBlob", reflect.TypeOf((*MockClusterClient)(nil).PrefetchBlob), arg0, arg1)
+}
+
+// ReplicateToRemote mocks base method.
 func (m *MockClusterClient) ReplicateToRemote(arg0 string, arg1 core.Digest, arg2 string) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "ReplicateToRemote", arg0, arg1, arg2)
@@ -100,13 +130,13 @@ func (m *MockClusterClient) ReplicateToRemote(arg0 string, arg1 core.Digest, arg
 	return ret0
 }
 
-// ReplicateToRemote indicates an expected call of ReplicateToRemote
+// ReplicateToRemote indicates an expected call of ReplicateToRemote.
 func (mr *MockClusterClientMockRecorder) ReplicateToRemote(arg0, arg1, arg2 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReplicateToRemote", reflect.TypeOf((*MockClusterClient)(nil).ReplicateToRemote), arg0, arg1, arg2)
 }
 
-// Stat mocks base method
+// Stat mocks base method.
 func (m *MockClusterClient) Stat(arg0 string, arg1 core.Digest) (*core.BlobInfo, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Stat", arg0, arg1)
@@ -115,22 +145,22 @@ func (m *MockClusterClient) Stat(arg0 string, arg1 core.Digest) (*core.BlobInfo,
 	return ret0, ret1
 }
 
-// Stat indicates an expected call of Stat
+// Stat indicates an expected call of Stat.
 func (mr *MockClusterClientMockRecorder) Stat(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Stat", reflect.TypeOf((*MockClusterClient)(nil).Stat), arg0, arg1)
 }
 
-// UploadBlob mocks base method
-func (m *MockClusterClient) UploadBlob(arg0 string, arg1 core.Digest, arg2 io.Reader) error {
+// UploadBlob mocks base method.
+func (m *MockClusterClient) UploadBlob(arg0 context.Context, arg1 string, arg2 core.Digest, arg3 io.ReadSeeker, arg4 uint64) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UploadBlob", arg0, arg1, arg2)
+	ret := m.ctrl.Call(m, "UploadBlob", arg0, arg1, arg2, arg3, arg4)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// UploadBlob indicates an expected call of UploadBlob
-func (mr *MockClusterClientMockRecorder) UploadBlob(arg0, arg1, arg2 interface{}) *gomock.Call {
+// UploadBlob indicates an expected call of UploadBlob.
+func (mr *MockClusterClientMockRecorder) UploadBlob(arg0, arg1, arg2, arg3, arg4 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UploadBlob", reflect.TypeOf((*MockClusterClient)(nil).UploadBlob), arg0, arg1, arg2)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UploadBlob", reflect.TypeOf((*MockClusterClient)(nil).UploadBlob), arg0, arg1, arg2, arg3, arg4)
 }

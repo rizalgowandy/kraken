@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,8 +15,8 @@ package blobserver
 
 import (
 	"bytes"
-	"io/ioutil"
-	"sort"
+	"context"
+	"io"
 	"testing"
 	"time"
 
@@ -24,7 +24,8 @@ import (
 	"github.com/uber/kraken/lib/backend"
 	"github.com/uber/kraken/lib/hostlist"
 	"github.com/uber/kraken/lib/persistedretry/writeback"
-	"github.com/uber/kraken/mocks/origin/blobclient"
+	"github.com/uber/kraken/lib/store"
+	mockblobclient "github.com/uber/kraken/mocks/origin/blobclient"
 	"github.com/uber/kraken/origin/blobclient"
 	"github.com/uber/kraken/utils/httputil"
 
@@ -32,15 +33,6 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 )
-
-func toAddrs(clients []blobclient.Client) []string {
-	var addrs []string
-	for _, c := range clients {
-		addrs = append(addrs, c.Addr())
-	}
-	sort.Strings(addrs)
-	return addrs
-}
 
 func TestClusterClientResilientToUnavailableMasters(t *testing.T) {
 	require := require.New(t)
@@ -65,7 +57,7 @@ func TestClusterClientResilientToUnavailableMasters(t *testing.T) {
 		s.writeBackManager.EXPECT().Add(
 			writeback.MatchTask(writeback.NewTask(
 				backend.NoopNamespace, blob.Digest.Hex(), 0))).Return(nil)
-		require.NoError(cc.UploadBlob(backend.NoopNamespace, blob.Digest, bytes.NewReader(blob.Content)))
+		require.NoError(cc.UploadBlob(context.Background(), backend.NoopNamespace, blob.Digest, store.NewBufferFileReader(blob.Content), uint64(len(blob.Content))))
 
 		bi, err := cc.Stat(backend.NoopNamespace, blob.Digest)
 		require.NoError(err)
@@ -77,7 +69,7 @@ func TestClusterClientResilientToUnavailableMasters(t *testing.T) {
 		require.NotNil(mi)
 
 		var buf bytes.Buffer
-		require.NoError(cc.DownloadBlob(backend.NoopNamespace, blob.Digest, &buf))
+		require.NoError(cc.DownloadBlob(context.Background(), backend.NoopNamespace, blob.Digest, &buf))
 		require.Equal(string(blob.Content), buf.String())
 
 		peers, err := cc.Owners(blob.Digest)
@@ -100,7 +92,7 @@ func TestClusterClientReturnsErrorOnNoAvailability(t *testing.T) {
 
 	blob := core.NewBlobFixture()
 
-	require.Error(cc.UploadBlob(backend.NoopNamespace, blob.Digest, bytes.NewReader(blob.Content)))
+	require.Error(cc.UploadBlob(context.Background(), backend.NoopNamespace, blob.Digest, store.NewBufferFileReader(blob.Content), uint64(len(blob.Content))))
 
 	_, err := cc.Stat(backend.NoopNamespace, blob.Digest)
 	require.Error(err)
@@ -108,7 +100,7 @@ func TestClusterClientReturnsErrorOnNoAvailability(t *testing.T) {
 	_, err = cc.GetMetaInfo(backend.NoopNamespace, blob.Digest)
 	require.Error(err)
 
-	require.Error(cc.DownloadBlob(backend.NoopNamespace, blob.Digest, ioutil.Discard))
+	require.Error(cc.DownloadBlob(context.Background(), backend.NoopNamespace, blob.Digest, io.Discard))
 
 	_, err = cc.Owners(blob.Digest)
 	require.Error(err)
@@ -132,14 +124,14 @@ func TestPollSkipsOriginOnTimeout(t *testing.T) {
 		[]blobclient.Client{mockClient1, mockClient2}, nil)
 
 	mockClient1.EXPECT().DownloadBlob(
-		namespace, blob.Digest, nil).Return(httputil.StatusError{Status: 202}).MinTimes(1)
+		gomock.Any(), namespace, blob.Digest, nil).Return(httputil.StatusError{Status: 202}).MinTimes(1)
 	mockClient1.EXPECT().Addr().Return("client1")
-	mockClient2.EXPECT().DownloadBlob(namespace, blob.Digest, nil).Return(nil)
+	mockClient2.EXPECT().DownloadBlob(gomock.Any(), namespace, blob.Digest, nil).Return(nil)
 
 	b := backoff.WithMaxRetries(backoff.NewConstantBackOff(100*time.Millisecond), 5)
 
 	require.NoError(blobclient.Poll(mockResolver, b, blob.Digest, func(c blobclient.Client) error {
-		return c.DownloadBlob(namespace, blob.Digest, nil)
+		return c.DownloadBlob(context.Background(), namespace, blob.Digest, nil)
 	}))
 }
 
@@ -159,14 +151,14 @@ func TestPollSkipsOriginOnNetworkErrors(t *testing.T) {
 
 	mockResolver.EXPECT().Resolve(blob.Digest).Return([]blobclient.Client{mockClient1, mockClient2}, nil)
 
-	mockClient1.EXPECT().DownloadBlob(namespace, blob.Digest, nil).Return(httputil.NetworkError{})
+	mockClient1.EXPECT().DownloadBlob(gomock.Any(), namespace, blob.Digest, nil).Return(httputil.NetworkError{})
 	mockClient1.EXPECT().Addr().Return("client1")
-	mockClient2.EXPECT().DownloadBlob(namespace, blob.Digest, nil).Return(nil)
+	mockClient2.EXPECT().DownloadBlob(gomock.Any(), namespace, blob.Digest, nil).Return(nil)
 
 	b := backoff.WithMaxRetries(backoff.NewConstantBackOff(100*time.Millisecond), 5)
 
 	require.NoError(blobclient.Poll(mockResolver, b, blob.Digest, func(c blobclient.Client) error {
-		return c.DownloadBlob(namespace, blob.Digest, nil)
+		return c.DownloadBlob(context.Background(), namespace, blob.Digest, nil)
 	}))
 }
 
@@ -187,10 +179,14 @@ func TestPollSkipsOriginOnRetryableError(t *testing.T) {
 
 	mockResolver.EXPECT().Resolve(blob.Digest).Return([]blobclient.Client{mockClient1, mockClient2}, nil)
 
-	mockClient1.EXPECT().UploadBlob(namespace, blob.Digest, nil).Return(httputil.StatusError{Status: 503})
-	mockClient2.EXPECT().UploadBlob(namespace, blob.Digest, nil).Return(nil)
+	reader := store.NewBufferFileReader(blob.Content)
+	size := uint64(len(blob.Content))
+	mockClient1.EXPECT().Addr().Return("client1").AnyTimes()
+	mockClient1.EXPECT().UploadBlob(gomock.Any(), namespace, blob.Digest, reader, size).Return(httputil.StatusError{Status: 503})
+	mockClient2.EXPECT().Addr().Return("client2").AnyTimes()
+	mockClient2.EXPECT().UploadBlob(gomock.Any(), namespace, blob.Digest, reader, size).Return(nil)
 
-	require.NoError(cc.UploadBlob(namespace, blob.Digest, nil))
+	require.NoError(cc.UploadBlob(context.Background(), namespace, blob.Digest, reader, size))
 }
 
 func TestClusterClientReturnsErrorOnNoAvailableOrigins(t *testing.T) {

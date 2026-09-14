@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -47,7 +47,15 @@ func TestMapLoadHoldsLock(t *testing.T) {
 		wg.Add(1)
 		go require.True(m.Load("k", func(l sync.Locker) {
 			defer wg.Done()
-			v := l.(*testValue)
+			v, ok := l.(*testValue)
+			if !ok {
+				require.Fail("expected *testValue")
+				// require.Fail() only marks the test as failed but doesn't stop execution.
+				// We can't use require.FailNow() here because we're in a goroutine
+				// (FailNow calls runtime.Goexit which doesn't work properly in goroutines).
+				// Return to avoid nil pointer dereference on v in subsequent code.
+				return
+			}
 			if v.n == 0 {
 				v.n++
 			} else {

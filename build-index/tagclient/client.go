@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/url"
 	"strconv"
 	"time"
@@ -28,6 +27,7 @@ import (
 	"github.com/uber/kraken/build-index/tagmodels"
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/lib/healthcheck"
+	"github.com/uber/kraken/utils/closers"
 	"github.com/uber/kraken/utils/httputil"
 )
 
@@ -38,6 +38,7 @@ var (
 
 // Client wraps tagserver endpoints.
 type Client interface {
+	CheckReadiness() error
 	Put(tag string, d core.Digest) error
 	PutAndReplicate(tag string, d core.Digest) error
 	Get(tag string) (core.Digest, error)
@@ -70,6 +71,14 @@ func NewSingleClient(addr string, config *tls.Config) Client {
 	return &singleClient{addr, config}
 }
 
+func (c *singleClient) CheckReadiness() error {
+	_, err := httputil.Get(
+		fmt.Sprintf("http://%s/readiness", c.addr),
+		httputil.SendTimeout(5*time.Second),
+		httputil.SendTLS(c.tls))
+	return err
+}
+
 func (c *singleClient) Put(tag string, d core.Digest) error {
 	_, err := httputil.Put(
 		fmt.Sprintf("http://%s/tags/%s/digest/%s", c.addr, url.PathEscape(tag), d.String()),
@@ -97,8 +106,8 @@ func (c *singleClient) Get(tag string) (core.Digest, error) {
 		}
 		return core.Digest{}, err
 	}
-	defer resp.Body.Close()
-	b, err := ioutil.ReadAll(resp.Body)
+	defer closers.Close(resp.Body)
+	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return core.Digest{}, fmt.Errorf("read body: %s", err)
 	}
@@ -150,7 +159,7 @@ func (c *singleClient) doListPaginated(urlFormat string, pathSub string,
 	if err != nil {
 		return resp, err
 	}
-	defer httpResp.Body.Close()
+	defer closers.Close(httpResp.Body)
 	if err := json.NewDecoder(httpResp.Body).Decode(&resp); err != nil {
 		return resp, fmt.Errorf("json decode: %s", err)
 	}
@@ -275,8 +284,8 @@ func (c *singleClient) Origin() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
-	b, err := ioutil.ReadAll(resp.Body)
+	defer closers.Close(resp.Body)
+	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("read body: %s", err)
 	}
@@ -309,6 +318,33 @@ func (cc *clusterClient) do(request func(c Client) error) error {
 		break
 	}
 	return err
+}
+
+// doOnce tries the request on only one randomly chosen client without any retries if it fails.
+func (cc *clusterClient) doOnce(request func(c Client) error) error {
+	addrs := cc.hosts.Resolve().Sample(1)
+	if len(addrs) == 0 {
+		return errors.New("cluster client: no hosts could be resolved")
+	}
+	// read the only sampled addr
+	var addr string
+	for addr = range addrs {
+	}
+	err := request(NewSingleClient(addr, cc.tls))
+	if httputil.IsNetworkError(err) {
+		cc.hosts.Failed(addr)
+	}
+	return err
+}
+
+func (cc *clusterClient) CheckReadiness() error {
+	return cc.doOnce(func(c Client) error {
+		err := c.CheckReadiness()
+		if err != nil {
+			return fmt.Errorf("build index not ready: %v", err)
+		}
+		return nil
+	})
 }
 
 func (cc *clusterClient) Put(tag string, d core.Digest) error {

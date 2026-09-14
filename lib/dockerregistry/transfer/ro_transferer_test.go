@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,7 +16,6 @@ package transfer
 import (
 	"bytes"
 	"io"
-	"io/ioutil"
 	"os"
 	"sync"
 	"testing"
@@ -25,8 +24,9 @@ import (
 	"github.com/uber/kraken/build-index/tagclient"
 	"github.com/uber/kraken/core"
 	"github.com/uber/kraken/lib/store"
-	"github.com/uber/kraken/mocks/build-index/tagclient"
-	"github.com/uber/kraken/mocks/lib/torrent/scheduler"
+	mocktagclient "github.com/uber/kraken/mocks/build-index/tagclient"
+	mockscheduler "github.com/uber/kraken/mocks/lib/torrent/scheduler"
+	"github.com/uber/kraken/utils/memsize"
 	"github.com/uber/kraken/utils/testutil"
 
 	"github.com/golang/mock/gomock"
@@ -38,6 +38,7 @@ type agentTransfererMocks struct {
 	cads  *store.CADownloadStore
 	tags  *mocktagclient.MockClient
 	sched *mockscheduler.MockScheduler
+	stats tally.TestScope
 }
 
 func newReadOnlyTransfererMocks(t *testing.T) (*agentTransfererMocks, func()) {
@@ -53,11 +54,23 @@ func newReadOnlyTransfererMocks(t *testing.T) (*agentTransfererMocks, func()) {
 
 	sched := mockscheduler.NewMockScheduler(ctrl)
 
-	return &agentTransfererMocks{cads, tags, sched}, cleanup.Run
+	stats := tally.NewTestScope("", nil)
+
+	return &agentTransfererMocks{cads, tags, sched, stats}, cleanup.Run
 }
 
 func (m *agentTransfererMocks) new() *ReadOnlyTransferer {
-	return NewReadOnlyTransferer(tally.NoopScope, m.cads, m.tags, m.sched)
+	return NewReadOnlyTransferer(m.stats, m.cads, m.tags, m.sched)
+}
+
+// mbServedValue returns the "mb_served" counter value from the scope.
+func mbServedValue(scope tally.TestScope) int64 {
+	for _, c := range scope.Snapshot().Counters() {
+		if c.Name() == "mb_served" {
+			return c.Value()
+		}
+	}
+	return 0
 }
 
 func TestReadOnlyTransfererDownloadCachesBlob(t *testing.T) {
@@ -81,10 +94,75 @@ func TestReadOnlyTransfererDownloadCachesBlob(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		result, err := transferer.Download(namespace, blob.Digest)
 		require.NoError(err)
-		b, err := ioutil.ReadAll(result)
+		b, err := io.ReadAll(result)
 		require.NoError(err)
 		require.Equal(blob.Content, b)
 	}
+}
+
+func TestReadOnlyTransfererDownloadEmitsMBServed(t *testing.T) {
+	for _, tc := range []struct {
+		desc     string
+		blobSize uint64
+		wantMB   int64
+	}{
+		{"large blob (2 MiB)", 2 * memsize.MB, 2},
+		{"exact 1 MiB blob", memsize.MB, 1},
+		{"sub-MiB blob truncates to 0", 256 * memsize.KB, 0},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			require := require.New(t)
+
+			mocks, cleanup := newReadOnlyTransfererMocks(t)
+			defer cleanup()
+
+			transferer := mocks.new()
+
+			namespace := "docker/repo-bar:latest"
+			blob := core.SizedBlobFixture(tc.blobSize, 64)
+
+			mocks.sched.EXPECT().Download(namespace, blob.Digest).DoAndReturn(
+				func(namespace string, d core.Digest) error {
+					return store.RunDownload(mocks.cads, d, blob.Content)
+				})
+
+			result, err := transferer.Download(namespace, blob.Digest)
+			require.NoError(err)
+			_, err = io.ReadAll(result)
+			require.NoError(err)
+
+			require.Equal(tc.wantMB, mbServedValue(mocks.stats))
+		})
+	}
+}
+
+// TestReadOnlyTransfererDownloadEmitsMBServedOnCacheHit documents that the
+// mb_served counter increments on every Download call, including cached reads
+// where no blob was actually fetched over the network.
+func TestReadOnlyTransfererDownloadEmitsMBServedOnCacheHit(t *testing.T) {
+	require := require.New(t)
+
+	mocks, cleanup := newReadOnlyTransfererMocks(t)
+	defer cleanup()
+
+	transferer := mocks.new()
+
+	namespace := "docker/repo-bar:latest"
+	blob := core.SizedBlobFixture(2*memsize.MB, 64)
+
+	mocks.sched.EXPECT().Download(namespace, blob.Digest).DoAndReturn(
+		func(namespace string, d core.Digest) error {
+			return store.RunDownload(mocks.cads, d, blob.Content)
+		})
+
+	for i := 0; i < 3; i++ {
+		result, err := transferer.Download(namespace, blob.Digest)
+		require.NoError(err)
+		_, err = io.ReadAll(result)
+		require.NoError(err)
+	}
+
+	require.Equal(int64(6), mbServedValue(mocks.stats))
 }
 
 func TestReadOnlyTransfererStat(t *testing.T) {
@@ -189,7 +267,7 @@ func TestReadOnlyTransfererMultipleDownloadsOfSameBlob(t *testing.T) {
 			defer wg.Done()
 			result, err := transferer.Download(namespace, blob.Digest)
 			require.NoError(err)
-			b, err := ioutil.ReadAll(result)
+			b, err := io.ReadAll(result)
 			require.NoError(err)
 			require.Equal(blob.Content, b)
 		}()

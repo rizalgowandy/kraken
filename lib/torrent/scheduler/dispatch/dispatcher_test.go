@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,6 +15,7 @@ package dispatch
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -67,7 +68,11 @@ func (m *mockMessages) Close() {
 
 func numRequestsPerPiece(messages Messages) map[int]int {
 	requests := make(map[int]int)
-	for _, msg := range messages.(*mockMessages).sent {
+	m, ok := messages.(*mockMessages)
+	if !ok {
+		panic(fmt.Sprintf("expected *mockMessages, got %T", messages))
+	}
+	for _, msg := range m.sent {
 		if msg.Message.Type == p2p.Message_PIECE_REQUEST {
 			requests[int(msg.Message.PieceRequest.Index)]++
 		}
@@ -77,7 +82,11 @@ func numRequestsPerPiece(messages Messages) map[int]int {
 
 func announcedPieces(messages Messages) []int {
 	var ps []int
-	for _, msg := range messages.(*mockMessages).sent {
+	m, ok := messages.(*mockMessages)
+	if !ok {
+		panic(fmt.Sprintf("expected *mockMessages, got %T", messages))
+	}
+	for _, msg := range m.sent {
 		if msg.Message.Type == p2p.Message_ANNOUCE_PIECE {
 			ps = append(ps, int(msg.Message.AnnouncePiece.Index))
 		}
@@ -86,8 +95,12 @@ func announcedPieces(messages Messages) []int {
 }
 
 func hasComplete(messages Messages) bool {
-	for _, m := range messages.(*mockMessages).sent {
-		if m.Message.Type == p2p.Message_COMPLETE {
+	m, ok := messages.(*mockMessages)
+	if !ok {
+		panic(fmt.Sprintf("expected *mockMessages, got %T", messages))
+	}
+	for _, msg := range m.sent {
+		if msg.Message.Type == p2p.Message_COMPLETE {
 			return true
 		}
 	}
@@ -95,7 +108,11 @@ func hasComplete(messages Messages) bool {
 }
 
 func closed(messages Messages) bool {
-	return messages.(*mockMessages).closed
+	m, ok := messages.(*mockMessages)
+	if !ok {
+		panic(fmt.Sprintf("expected *mockMessages, got %T", messages))
+	}
+	return m.closed
 }
 
 type noopEvents struct{}
@@ -125,7 +142,7 @@ func TestDispatcherSendUniquePieceRequestsWithinLimit(t *testing.T) {
 	require := require.New(t)
 
 	config := Config{
-		PipelineLimit: 3,
+		AgentPipelineLimit: 3,
 	}
 	clk := clock.NewMock()
 
@@ -147,9 +164,10 @@ func TestDispatcherSendUniquePieceRequestsWithinLimit(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			p, err := d.addPeer(core.PeerIDFixture(), peerBitfield, newMockMessages())
+			p, err := d.addPeer(core.PeerIDFixture(), false, peerBitfield, newMockMessages())
 			require.NoError(err)
-			d.maybeRequestMorePieces(p)
+			_, err = d.maybeRequestMorePieces(p)
+			require.NoError(err)
 			for i, n := range numRequestsPerPiece(p.messages) {
 				require.True(n <= 1)
 				mu.Lock()
@@ -157,14 +175,14 @@ func TestDispatcherSendUniquePieceRequestsWithinLimit(t *testing.T) {
 				totalRequestsPerPiece[i] += n
 				require.True(totalRequestsPerPiece[i] <= 1)
 				totalRequestPerPeer[p.id] += n
-				require.True(totalRequestPerPeer[p.id] <= config.PipelineLimit)
+				require.True(totalRequestPerPeer[p.id] <= config.AgentPipelineLimit)
 				mu.Unlock()
 			}
 		}()
 	}
 	wg.Wait()
 
-	require.Equal(config.PipelineLimit*10, requestCount)
+	require.Equal(config.AgentPipelineLimit*10, requestCount)
 
 	buffer := make([]uint, peerBitfield.Len())
 	_, buffer = peerBitfield.NextSetMany(uint(0), buffer)
@@ -188,9 +206,10 @@ func TestDispatcherResendFailedPieceRequests(t *testing.T) {
 	d := testDispatcher(config, clk, torrent)
 
 	// p1 has both pieces and sends requests for both.
-	p1, err := d.addPeer(core.PeerIDFixture(), bitsetutil.FromBools(true, true), newMockMessages())
+	p1, err := d.addPeer(core.PeerIDFixture(), false, bitsetutil.FromBools(true, true), newMockMessages())
 	require.NoError(err)
-	d.maybeRequestMorePieces(p1)
+	_, err = d.maybeRequestMorePieces(p1)
+	require.NoError(err)
 	require.Equal(map[int]int{
 		0: 1,
 		1: 1,
@@ -198,16 +217,18 @@ func TestDispatcherResendFailedPieceRequests(t *testing.T) {
 
 	// p2 has piece 0 and sends no piece requests.
 	p2, err := d.addPeer(
-		core.PeerIDFixture(), bitsetutil.FromBools(true, false), newMockMessages())
+		core.PeerIDFixture(), false, bitsetutil.FromBools(true, false), newMockMessages())
 	require.NoError(err)
-	d.maybeRequestMorePieces(p2)
+	_, err = d.maybeRequestMorePieces(p2)
+	require.NoError(err)
 	require.Equal(map[int]int{}, numRequestsPerPiece(p2.messages))
 
 	// p3 has piece 1 and sends no piece requests.
 	p3, err := d.addPeer(
-		core.PeerIDFixture(), bitsetutil.FromBools(false, true), newMockMessages())
+		core.PeerIDFixture(), false, bitsetutil.FromBools(false, true), newMockMessages())
 	require.NoError(err)
-	d.maybeRequestMorePieces(p3)
+	_, err = d.maybeRequestMorePieces(p3)
+	require.NoError(err)
 	require.Equal(map[int]int{}, numRequestsPerPiece(p3.messages))
 
 	clk.Add(d.pieceRequestTimeout + 1)
@@ -244,21 +265,23 @@ func TestDispatcherSendErrorsMarksPieceRequestsUnsent(t *testing.T) {
 
 	d := testDispatcher(config, clk, torrent)
 
-	p1, err := d.addPeer(core.PeerIDFixture(), bitsetutil.FromBools(true), newMockMessages())
+	p1, err := d.addPeer(core.PeerIDFixture(), false, bitsetutil.FromBools(true), newMockMessages())
 	require.NoError(err)
 
 	p1.messages.Close()
 
 	// Send should fail since p1 messages are closed.
-	d.maybeRequestMorePieces(p1)
+	_, err = d.maybeRequestMorePieces(p1)
+	require.Error(err)
 
 	require.Equal(map[int]int{}, numRequestsPerPiece(p1.messages))
 
-	p2, err := d.addPeer(core.PeerIDFixture(), bitsetutil.FromBools(true), newMockMessages())
+	p2, err := d.addPeer(core.PeerIDFixture(), false, bitsetutil.FromBools(true), newMockMessages())
 	require.NoError(err)
 
 	// Send should succeed since pending requests were marked unsent.
-	d.maybeRequestMorePieces(p2)
+	_, err = d.maybeRequestMorePieces(p2)
+	require.NoError(err)
 
 	require.Equal(map[int]int{
 		0: 1,
@@ -292,8 +315,8 @@ func TestDispatcherEndgame(t *testing.T) {
 	require := require.New(t)
 
 	config := Config{
-		PipelineLimit:    1,
-		EndgameThreshold: 1,
+		AgentPipelineLimit: 1,
+		EndgameThreshold:   1,
 	}
 	clk := clock.NewMock()
 
@@ -302,17 +325,19 @@ func TestDispatcherEndgame(t *testing.T) {
 
 	d := testDispatcher(config, clk, torrent)
 
-	p1, err := d.addPeer(core.PeerIDFixture(), bitsetutil.FromBools(true), newMockMessages())
+	p1, err := d.addPeer(core.PeerIDFixture(), false, bitsetutil.FromBools(true), newMockMessages())
 	require.NoError(err)
 
-	d.maybeRequestMorePieces(p1)
+	_, err = d.maybeRequestMorePieces(p1)
+	require.NoError(err)
 	require.Equal(map[int]int{0: 1}, numRequestsPerPiece(p1.messages))
 
-	p2, err := d.addPeer(core.PeerIDFixture(), bitsetutil.FromBools(true), newMockMessages())
+	p2, err := d.addPeer(core.PeerIDFixture(), false, bitsetutil.FromBools(true), newMockMessages())
 	require.NoError(err)
 
 	// Should send duplicate request for piece 0 since we're in endgame.
-	d.maybeRequestMorePieces(p2)
+	_, err = d.maybeRequestMorePieces(p2)
+	require.NoError(err)
 	require.Equal(map[int]int{0: 1}, numRequestsPerPiece(p2.messages))
 }
 
@@ -326,10 +351,10 @@ func TestDispatcherHandlePiecePayloadAnnouncesPiece(t *testing.T) {
 
 	d := testDispatcher(Config{}, clock.NewMock(), torrent)
 
-	p1, err := d.addPeer(core.PeerIDFixture(), bitsetutil.FromBools(false, false), newMockMessages())
+	p1, err := d.addPeer(core.PeerIDFixture(), false, bitsetutil.FromBools(false, false), newMockMessages())
 	require.NoError(err)
 
-	p2, err := d.addPeer(core.PeerIDFixture(), bitsetutil.FromBools(false, false), newMockMessages())
+	p2, err := d.addPeer(core.PeerIDFixture(), false, bitsetutil.FromBools(false, false), newMockMessages())
 	require.NoError(err)
 
 	msg := conn.NewPiecePayloadMessage(0, piecereader.NewBuffer(blob.Content[0:1]))
@@ -353,10 +378,10 @@ func TestDispatcherHandlePiecePayloadSendsCompleteMessage(t *testing.T) {
 
 	d := testDispatcher(Config{}, clock.NewMock(), torrent)
 
-	p1, err := d.addPeer(core.PeerIDFixture(), bitsetutil.FromBools(false), newMockMessages())
+	p1, err := d.addPeer(core.PeerIDFixture(), false, bitsetutil.FromBools(false), newMockMessages())
 	require.NoError(err)
 
-	p2, err := d.addPeer(core.PeerIDFixture(), bitsetutil.FromBools(false), newMockMessages())
+	p2, err := d.addPeer(core.PeerIDFixture(), false, bitsetutil.FromBools(false), newMockMessages())
 	require.NoError(err)
 
 	msg := conn.NewPiecePayloadMessage(0, piecereader.NewBuffer(blob.Content[0:1]))
@@ -377,11 +402,11 @@ func TestDispatcherClosesCompletedPeersWhenComplete(t *testing.T) {
 
 	d := testDispatcher(Config{}, clock.NewMock(), torrent)
 
-	completedPeer, err := d.addPeer(core.PeerIDFixture(), bitsetutil.FromBools(true), newMockMessages())
+	completedPeer, err := d.addPeer(core.PeerIDFixture(), false, bitsetutil.FromBools(true), newMockMessages())
 	require.NoError(err)
 
 	incompletePeer, err := d.addPeer(
-		core.PeerIDFixture(), bitsetutil.FromBools(false), newMockMessages())
+		core.PeerIDFixture(), false, bitsetutil.FromBools(false), newMockMessages())
 	require.NoError(err)
 
 	msg := conn.NewPiecePayloadMessage(0, piecereader.NewBuffer(blob.Content[0:1]))
@@ -406,7 +431,7 @@ func TestDispatcherHandleCompleteRequestsPieces(t *testing.T) {
 
 	d := testDispatcher(Config{}, clock.NewMock(), torrent)
 
-	p, err := d.addPeer(core.PeerIDFixture(), bitsetutil.FromBools(false), newMockMessages())
+	p, err := d.addPeer(core.PeerIDFixture(), false, bitsetutil.FromBools(false), newMockMessages())
 	require.NoError(err)
 
 	require.Empty(numRequestsPerPiece(p.messages))
@@ -429,44 +454,44 @@ func TestDispatcherPeerPieceCounts(t *testing.T) {
 
 	var err error
 
-	p, err := d.addPeer(core.PeerIDFixture(), bitsetutil.FromBools(false, false, false), newMockMessages())
+	p, err := d.addPeer(core.PeerIDFixture(), false, bitsetutil.FromBools(false, false, false), newMockMessages())
 	require.NoError(err)
 
 	require.Equal(0, d.numPeersByPiece.Get(0))
 	require.Equal(0, d.numPeersByPiece.Get(1))
 	require.Equal(0, d.numPeersByPiece.Get(2))
 
-	d.dispatch(p, conn.NewAnnouncePieceMessage(2))
+	require.NoError(d.dispatch(p, conn.NewAnnouncePieceMessage(2)))
 
 	require.Equal(1, d.numPeersByPiece.Get(2))
 
-	d.dispatch(p, conn.NewAnnouncePieceMessage(0))
-	d.dispatch(p, conn.NewAnnouncePieceMessage(0))
+	require.NoError(d.dispatch(p, conn.NewAnnouncePieceMessage(0)))
+	require.NoError(d.dispatch(p, conn.NewAnnouncePieceMessage(0)))
 
 	require.Equal(2, d.numPeersByPiece.Get(0))
 
-	_, err = d.addPeer(core.PeerIDFixture(), bitsetutil.FromBools(true, true, true), newMockMessages())
+	_, err = d.addPeer(core.PeerIDFixture(), false, bitsetutil.FromBools(true, true, true), newMockMessages())
 	require.NoError(err)
 
 	require.Equal(3, d.numPeersByPiece.Get(0))
 	require.Equal(1, d.numPeersByPiece.Get(1))
 	require.Equal(2, d.numPeersByPiece.Get(2))
 
-	_, err = d.addPeer(core.PeerIDFixture(), bitsetutil.FromBools(true, false, true), newMockMessages())
+	_, err = d.addPeer(core.PeerIDFixture(), false, bitsetutil.FromBools(true, false, true), newMockMessages())
 	require.NoError(err)
 
 	require.Equal(4, d.numPeersByPiece.Get(0))
 	require.Equal(1, d.numPeersByPiece.Get(1))
 	require.Equal(3, d.numPeersByPiece.Get(2))
 
-	_, err = d.addPeer(core.PeerIDFixture(), bitsetutil.FromBools(false, false, false), newMockMessages())
+	_, err = d.addPeer(core.PeerIDFixture(), false, bitsetutil.FromBools(false, false, false), newMockMessages())
 	require.NoError(err)
 
 	require.Equal(4, d.numPeersByPiece.Get(0))
 	require.Equal(1, d.numPeersByPiece.Get(1))
 	require.Equal(3, d.numPeersByPiece.Get(2))
 
-	d.removePeer(p)
+	require.NoError(d.removePeer(p))
 
 	require.Equal(3, d.numPeersByPiece.Get(0))
 	require.Equal(1, d.numPeersByPiece.Get(1))
